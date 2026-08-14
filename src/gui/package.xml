@@ -1,0 +1,25 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>gui</name>
+  <version>0.0.0</version>
+  <description>Tkinter control panel for starting/stopping the main_bot Gazebo sim and clearing leftover gz/ros processes, instead of juggling several terminals by hand. Ported as-is from superDog's gui package, with the movement joystick/trot/balance-chart panel (specific to superDog's walking gait controller) replaced by babyDog's actual Stand/Sit/Estop buttons.</description>
+  <maintainer email="dangtinh.ftcpy@gmail.com">dvt</maintainer>
+  <license>TODO: License declaration</license>
+
+  <exec_depend>python3-tk</exec_depend>
+  <exec_depend>main_bot</exec_depend>
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>controller</exec_depend>
+  <exec_depend>joystick_bridge</exec_depend>
+  <exec_depend>python3-psutil</exec_depend>
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

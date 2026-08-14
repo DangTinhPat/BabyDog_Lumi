@@ -1,0 +1,143 @@
+# controller_manager config, loaded by sim.launch.py via babydog.xacro's
+# <ros2_control><gazebo><plugin><parameters>. Trimmed from superDog's
+# go1_controllers.yaml: no imu_sensor_broadcaster (no IMU yet, see
+# description/babydog.xacro) and unitree_guide_controller's full gait/balance
+# stack is replaced by "controller" (stand up / sit down only, no walking, no
+# active balance - that all needs IMU feedback we don't have yet). "controller"
+# also has FK/IK (KDL, ported from unitree_guide_controller's RobotLeg/
+# QuadrupedRobot) used for static Tff (gravity feedforward) - see tau_ff_scale
+# below, off by default.
+#
+# 1000Hz base rate because leg_pd_controller runs its own control loop at up
+# to the controller_manager's rate and wants to be fast.
+controller_manager:
+  ros__parameters:
+    update_rate: 1000
+
+    joint_state_broadcaster:
+      type: joint_state_broadcaster/JointStateBroadcaster
+
+    leg_pd_controller:
+      type: leg_pd_controller/LegPdController
+
+    controller:
+      type: controller/StandSitController
+
+leg_pd_controller:
+  ros__parameters:
+    update_rate: 1000
+    joints:
+      - front_right_abad_joint
+      - front_right_hip_joint
+      - front_right_knee_joint
+      - front_left_abad_joint
+      - front_left_hip_joint
+      - front_left_knee_joint
+      - hind_right_abad_joint
+      - hind_right_hip_joint
+      - hind_right_knee_joint
+      - hind_left_abad_joint
+      - hind_left_hip_joint
+      - hind_left_knee_joint
+
+    command_interfaces:
+      - effort
+
+    state_interfaces:
+      - position
+      - velocity
+
+controller:
+  ros__parameters:
+    # PHAI khop update_rate cua controller_manager o tren (1000) - StateHoldPose.cpp
+    # tinh duration_ = frequency_ * duration_seconds roi tang percent_ moi lan run()
+    # duoc goi (that su o 1000Hz, dung nhip controller_manager). Truoc day gia tri
+    # nay bi de nham 200 (copy tu controllers_real.yaml, noi 200 la dung that vi
+    # robot that chay 200Hz that) - khien toan bo noi suy tanh (ca dung lan ngoi)
+    # chay nhanh gap 5 lan du kien (1.2s cau hinh nhung thuc te chi ~0.24s), nhin
+    # giong nhu mat luc dot ngot. Da sua.
+    update_rate: 1000
+    command_prefix: "leg_pd_controller"
+    joints:
+      - front_right_abad_joint
+      - front_right_hip_joint
+      - front_right_knee_joint
+      - front_left_abad_joint
+      - front_left_hip_joint
+      - front_left_knee_joint
+      - hind_right_abad_joint
+      - hind_right_hip_joint
+      - hind_right_knee_joint
+      - hind_left_abad_joint
+      - hind_left_hip_joint
+      - hind_left_knee_joint
+
+    command_interfaces:
+      - effort
+      - position
+      - velocity
+      - kp
+      - kd
+
+    state_interfaces:
+      - effort
+      - position
+      - velocity
+
+    # Same devq stand/sit poses as superDog's UnitreeGuideController.h
+    # (hip = -arccos(H/2L), knee = 2*arccos(H/2L), L=0.15m): H=0.22m standing,
+    # H=0.10m sitting/crouched.
+    # DA TINH LAI (2026-08-14). hip/knee: cong thuc dich toa do new = old - home
+    # (home_hip=-1.238, home_knee=2.705, xem NOTE.md muc 2.8) - GIONG NHAU 4 chan vi
+    # hip/knee dung axis MIRROR theo tung chan (huong nguoc nhau), origin da hap thu
+    # het su khac biet do. abad: KHONG the dung chung 1 so cho 4 chan - ca 4 khop abad
+    # dung CUNG 1 axis="1 0 0" (KHONG mirror), chi co origin doi dau theo ben
+    # (phai=-0.36, trai=+0.36, xem babydog.xacro) - de dua ve thang dung (bu het goc
+    # home ±0.360, tranh "toet" nhu tu the nam xap luc dung), can gia tri NGUOC DAU
+    # theo ben: phai=+0.36, trai=-0.36 (q = -home). Da kiem tra nam trong <limit> tung
+    # ben (phai:[-0.774,1.494], trai:[-1.494,0.774]).
+    stand_pos:
+      [ 0.36, 0.49, -1.21,
+       -0.36, 0.49, -1.21,
+        0.36, 0.49, -1.21,
+       -0.36, 0.49, -1.21 ]
+
+    sit_pos:
+      [ 0.36, 0.007, -0.243,
+       -0.36, 0.007, -0.243,
+        0.36, 0.007, -0.243,
+       -0.36, 0.007, -0.243 ]
+
+    # Scaled down from Go1's kp=80/kd=3.5 in proportion to devq's much smaller
+    # per-joint effort limit (9.1 N*m vs Go1's 23.7/35.55 N*m) - untested first
+    # guess inherited from superDog, needs empirical tuning once the robot is
+    # spawned/on real hardware.
+    stand_kp: 50.0
+    stand_kd: 1.5
+    sit_kp: 50.0
+    sit_kd: 1.5
+
+    # Thoi gian noi suy tanh (giay) - mac dinh 1.2 (StateHoldPose.h) cho ca 2 chieu.
+    # sit_duration tang len day vi ban nhanh (1.2s) nhin giong nhu mat luc dot ngot,
+    # gay soc co khi that - tang len cham hon de giam gia toc luc dung yen.
+    stand_duration: 1.2
+    sit_duration: 2.5
+
+    # FK/IK chain config (KDL, parsed from /robot_description at runtime) - see
+    # QuadrupedRobot::QuadrupedRobot(). "body" carries the URDF's real mass;
+    # "base" is a massless reference link joined via the fixed "floating_base"
+    # joint. feet_names order matches joints: above (front_right/front_left/
+    # hind_right/hind_left).
+    base_name: "body"
+    feet_names:
+      - front_right_foot
+      - front_left_foot
+      - hind_right_foot
+      - hind_left_foot
+
+    # Tff (gravity feedforward, sim only - see controller.xml/StateHoldPose.cpp).
+    # tau_ff_scale=0.0 => fully OFF (default, safe). tau_ff_max_nm is an
+    # absolute per-joint clamp (Nm) applied regardless of scale, sized well
+    # below devq's 9.1 N*m actuator limit.
+    tau_ff_scale: 0.0
+    tau_ff_max_nm: 2.0

@@ -1,0 +1,9 @@
+<library path="controller">
+    <class name="controller/StandSitController"
+           type="controller::StandSitController"
+           base_class_type="controller_interface::ControllerInterface">
+        <description>
+            Stand up / sit down FSM controller (no gait, no active balance yet) + static gravity Tff (sim only, off by default).
+        </description>
+    </class>
+</library>

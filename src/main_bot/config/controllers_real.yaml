@@ -1,0 +1,100 @@
+# controller_manager config CHO ROBOT THẬT - dùng bởi real_ros2_control.launch.py
+# (main_bot_hardware/RealSystem qua babydog.xacro hardware:=real), KHÔNG dùng cho
+# sim (xem controllers.yaml - file đó giữ nguyên không đổi). So khác với bản sim:
+#   - KHÔNG load leg_pd_controller: board driver mỗi khớp (firmware/stm32h7)
+#     đã tự làm PD cục bộ rồi (xem motor_protocol.h/actuator_if.c) - stand_sit_
+#     controller claim thẳng hardware qua command_prefix rỗng thay vì qua
+#     leg_pd_controller.
+#   - update_rate thấp hơn (200Hz) - khớp nhịp CAN FD thật (JOINT_CMD_CAN_ID/
+#     JOINT_FB_CAN_ID, protocol.h), không cần 1000Hz như sim (Gazebo không có
+#     giới hạn băng thông mạng thật).
+#   - command_interfaces: position/kp/kd (không có effort/velocity - robot thật
+#     không có driver nhận lệnh torque hay velocity trực tiếp, board mỗi khớp
+#     chỉ nhận target_angle+kp+kd, xem protocol.h).
+#   - state_interfaces: position/velocity (không effort - board driver không
+#     báo dòng điện/torque về).
+controller_manager:
+  ros__parameters:
+    update_rate: 200
+
+    joint_state_broadcaster:
+      type: joint_state_broadcaster/JointStateBroadcaster
+
+    controller:
+      type: controller/StandSitController
+
+controller:
+  ros__parameters:
+    update_rate: 200
+    command_prefix: ""
+    joints:
+      - front_right_abad_joint
+      - front_right_hip_joint
+      - front_right_knee_joint
+      - front_left_abad_joint
+      - front_left_hip_joint
+      - front_left_knee_joint
+      - hind_right_abad_joint
+      - hind_right_hip_joint
+      - hind_right_knee_joint
+      - hind_left_abad_joint
+      - hind_left_hip_joint
+      - hind_left_knee_joint
+
+    command_interfaces:
+      - position
+      - kp
+      - kd
+
+    state_interfaces:
+      - position
+      - velocity
+
+    # Y het controllers.yaml (sim) - cung 1 robot, cung tu the dung/ngoi. DA TINH LAI
+    # (2026-08-14). hip/knee: new = old - home (home_hip=-1.238, home_knee=2.705, xem
+    # NOTE.md muc 2.8) - giong nhau 4 chan vi hip/knee dung axis mirror rieng tung chan.
+    # abad: KHONG dung chung 1 so - ca 4 khop abad dung CUNG axis="1 0 0" (khong mirror),
+    # chi co origin doi dau theo ben (phai=-0.36, trai=+0.36) - can gia tri NGUOC DAU
+    # theo ben de dua ve thang dung: phai=+0.36, trai=-0.36 (q=-home), tranh "toet" kieu
+    # tu the nam xap. Gia tri nay la KHONG GIAN LOGIC (giong URDF) - firmware/
+    # motor_calib.c tu chuyen sang RAW rieng qua MOTOR_JOINT_SIGN + bang gioi han
+    # REL_DEG (da dao dau lai o do de khop quy uoc nay) - 2 lop sua nay DOC LAP nhau.
+    stand_pos:
+      [ 0.36, 0.49, -1.21,
+       -0.36, 0.49, -1.21,
+        0.36, 0.49, -1.21,
+       -0.36, 0.49, -1.21 ]
+
+    sit_pos:
+      [ 0.36, 0.007, -0.243,
+       -0.36, 0.007, -0.243,
+        0.36, 0.007, -0.243,
+       -0.36, 0.007, -0.243 ]
+
+    stand_kp: 50.0
+    stand_kd: 1.5
+    sit_kp: 50.0
+    sit_kd: 1.5
+
+    # Thoi gian noi suy tanh (giay) - mac dinh 1.2 (StateHoldPose.h) cho ca 2 chieu.
+    # sit_duration tang len - y het controllers.yaml (sim), tranh soc co khi khi
+    # ngoi xuong tren robot that (quan trong hon ca sim vi day la dong co/hop so
+    # that, khong phai vat ly gia lap).
+    stand_duration: 1.2
+    sit_duration: 2.5
+
+    # FK/IK chain config - y het controllers.yaml (sim), dung chung 1 URDF.
+    base_name: "body"
+    feet_names:
+      - front_right_foot
+      - front_left_foot
+      - hind_right_foot
+      - hind_left_foot
+
+    # Tff KHONG the chay tren duong nay du co dat scale>0 - command_interfaces
+    # o tren khong khai "effort" (board driver khong nhan lenh torque, xem
+    # comment dau file) nen joint_torque_command_interface_ luon rong (size=0),
+    # StateHoldPose::run() tu dong bo qua toan bo khoi Tff (has_torque=false).
+    # Giu 0.0 de tuong minh, khong phai vi can thiet.
+    tau_ff_scale: 0.0
+    tau_ff_max_nm: 2.0

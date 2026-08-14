@@ -1,0 +1,37 @@
+# colcon (ROS2 workspace) - matches at any depth (also catches nested
+# build/install/log inside firmware/stm32h7/microros/firmware/{mcu_ws,dev_ws}/)
+build/
+install/
+log/
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+
+# Firmware
+firmware/stm32h7/build/
+
+# micro-ROS vendored sources - fetched via `vcs import < ros2.repos` (standard
+# micro_ros_setup workflow, see toolchain.cmake), NOT hand-written code -
+# reproducible from ros2.repos/colcon.meta (kept tracked) without committing
+# ~100MB+ of vendored ros2/ament/eProsima/uros source trees.
+firmware/stm32h7/microros/firmware/mcu_ws/ros2/
+firmware/stm32h7/microros/firmware/mcu_ws/uros/
+firmware/stm32h7/microros/firmware/mcu_ws/eProsima/
+firmware/stm32h7/microros/firmware/dev_ws/ros2/
+firmware/stm32h7/microros/firmware/dev_ws/ament/
+
+# VS Code C/C++ extension index cache (regenerates automatically, can get
+# multi-GB - browse.vc.db alone hit 1.6GB this session)
+.vscode/browse.vc.db*
+.pytest_cache/
+
+# ST-Link / flash tool artifacts
+*.stlink
+
+# Editor/OS junk
+.DS_Store
+Thumbs.db
+*.swp
+*~

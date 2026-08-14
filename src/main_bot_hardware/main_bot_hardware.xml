@@ -1,0 +1,10 @@
+<library path="main_bot_hardware">
+    <class name="main_bot_hardware/RealSystem"
+           type="main_bot_hardware::RealSystem"
+           base_class_type="hardware_interface::SystemInterface">
+        <description>
+            ros2_control SystemInterface cho robot that - relay position/kp/kd toi
+            firmware/stm32h7 qua CAN FD, xem README.md.
+        </description>
+    </class>
+</library>

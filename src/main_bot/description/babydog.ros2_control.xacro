@@ -1,0 +1,216 @@
+<?xml version="1.0"?>
+<!-- ros2_control interface definition ONLY - tách riêng khỏi babydog.xacro (vật lý:
+     link/joint/mesh/material/friction) theo đúng convention hay thấy ở các dự án
+     ros2_control khác (robot.urdf.xacro / robot.ros2_control.xacro / robot.gazebo.xacro
+     tách biệt). Kéo vào bởi robot.urdf.xacro, không tự đứng riêng được (tham chiếu tên
+     joint định nghĩa trong babydog.xacro bằng string, không cần thứ tự include cụ thể -
+     URDF/ros2_control không yêu cầu <joint> phải đứng trước <ros2_control> tham chiếu nó). -->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+  <!-- "gazebo" (mac dinh, dung boi sim.launch.py) hoac "real" (dung boi
+       real_ros2_control.launch.py, main_bot_hardware/RealSystem) - xem
+       <hardware> ben duoi. Khong doi gi cho hardware_target="gazebo", output
+       xacro y het truoc khi co xacro:arg nay. -->
+  <xacro:arg name="hardware" default="gazebo"/>
+  <xacro:property name="hardware_target" value="$(arg hardware)"/>
+
+  <!-- gz sim's ros2_control integration. initial_value on each position
+       state_interface = 0.0 for every joint - matches the calibrated "home"
+       pose (nam xap/prone, see NOTE.md muc 2.6 "DA FIX VINH VIEN"): origin
+       rpy trong babydog.xacro (hip/knee) da duoc dich chuyen sao cho gia tri
+       khop = 0.0 CHINH LA tu the nghi tu nhien, va nam trong <limit> hop le
+       (knee's limit hien la lower="-2.269" upper="0.0" - 0.0 la bien tren hop
+       le, KHONG con bi loai tru nhu truoc). TRUOC DAY gia tri nay hardcode
+       theo stand_pos_ (-0.748/1.495) vi luc do 0 nam NGOAI limit khop goi
+       (lower="0.436" cu) - da lac hau tu khi hieu chinh origin/limit, gay
+       robot spawn sai dang (chan xoe ngang) du code KHONG lien quan gi den
+       cac thay doi khac - PHAI giu dung 0.0 o day, khong tu y doi lai theo
+       stand_pos moi truong hop tuong tu trong tuong lai. effort la command_interface cho
+       hardware_target=gazebo only - it's what leg_pd_controller (the
+       low-level layer of the vendored gait stack) actually claims;
+       hardware_target=real exports position/kp/kd instead (matches
+       main_bot_hardware/RealSystem::export_command_interfaces() - RealSystem
+       has NO effort command_interface, declaring one unconditionally here
+       caused controller_manager to reject the hardware with "missing command
+       interfaces: .../effort" on every real bring-up attempt). -->
+  <ros2_control name="GazeboSimSystem" type="system">
+    <hardware>
+      <xacro:if value="${hardware_target == 'gazebo'}">
+        <plugin>gz_ros2_control/GazeboSimSystem</plugin>
+      </xacro:if>
+      <xacro:if value="${hardware_target == 'real'}">
+        <plugin>main_bot_hardware/RealSystem</plugin>
+      </xacro:if>
+    </hardware>
+    <joint name="front_right_abad_joint">
+      <xacro:if value="${hardware_target == 'gazebo'}">
+        <command_interface name="effort"><param name="initial_value">0.0</param></command_interface>
+      </xacro:if>
+      <xacro:if value="${hardware_target == 'real'}">
+        <command_interface name="position"><param name="initial_value">0.0</param></command_interface>
+        <command_interface name="kp"><param name="initial_value">0.0</param></command_interface>
+        <command_interface name="kd"><param name="initial_value">0.0</param></command_interface>
+      </xacro:if>
+      <state_interface name="position"><param name="initial_value">0.0</param></state_interface>
+      <state_interface name="velocity"/>
+      <state_interface name="effort"/>
+    </joint>
+    <joint name="front_right_hip_joint">
+      <xacro:if value="${hardware_target == 'gazebo'}">
+        <command_interface name="effort"><param name="initial_value">0.0</param></command_interface>
+      </xacro:if>
+      <xacro:if value="${hardware_target == 'real'}">
+        <command_interface name="position"><param name="initial_value">0.0</param></command_interface>
+        <command_interface name="kp"><param name="initial_value">0.0</param></command_interface>
+        <command_interface name="kd"><param name="initial_value">0.0</param></command_interface>
+      </xacro:if>
+      <state_interface name="position"><param name="initial_value">0.0</param></state_interface>
+      <state_interface name="velocity"/>
+      <state_interface name="effort"/>
+    </joint>
+    <joint name="front_right_knee_joint">
+      <xacro:if value="${hardware_target == 'gazebo'}">
+        <command_interface name="effort"><param name="initial_value">0.0</param></command_interface>
+      </xacro:if>
+      <xacro:if value="${hardware_target == 'real'}">
+        <command_interface name="position"><param name="initial_value">0.0</param></command_interface>
+        <command_interface name="kp"><param name="initial_value">0.0</param></command_interface>
+        <command_interface name="kd"><param name="initial_value">0.0</param></command_interface>
+      </xacro:if>
+      <state_interface name="position"><param name="initial_value">0.0</param></state_interface>
+      <state_interface name="velocity"/>
+      <state_interface name="effort"/>
+    </joint>
+    <joint name="front_left_abad_joint">
+      <xacro:if value="${hardware_target == 'gazebo'}">
+        <command_interface name="effort"><param name="initial_value">0.0</param></command_interface>
+      </xacro:if>
+      <xacro:if value="${hardware_target == 'real'}">
+        <command_interface name="position"><param name="initial_value">0.0</param></command_interface>
+        <command_interface name="kp"><param name="initial_value">0.0</param></command_interface>
+        <command_interface name="kd"><param name="initial_value">0.0</param></command_interface>
+      </xacro:if>
+      <state_interface name="position"><param name="initial_value">0.0</param></state_interface>
+      <state_interface name="velocity"/>
+      <state_interface name="effort"/>
+    </joint>
+    <joint name="front_left_hip_joint">
+      <xacro:if value="${hardware_target == 'gazebo'}">
+        <command_interface name="effort"><param name="initial_value">0.0</param></command_interface>
+      </xacro:if>
+      <xacro:if value="${hardware_target == 'real'}">
+        <command_interface name="position"><param name="initial_value">0.0</param></command_interface>
+        <command_interface name="kp"><param name="initial_value">0.0</param></command_interface>
+        <command_interface name="kd"><param name="initial_value">0.0</param></command_interface>
+      </xacro:if>
+      <state_interface name="position"><param name="initial_value">0.0</param></state_interface>
+      <state_interface name="velocity"/>
+      <state_interface name="effort"/>
+    </joint>
+    <joint name="front_left_knee_joint">
+      <xacro:if value="${hardware_target == 'gazebo'}">
+        <command_interface name="effort"><param name="initial_value">0.0</param></command_interface>
+      </xacro:if>
+      <xacro:if value="${hardware_target == 'real'}">
+        <command_interface name="position"><param name="initial_value">0.0</param></command_interface>
+        <command_interface name="kp"><param name="initial_value">0.0</param></command_interface>
+        <command_interface name="kd"><param name="initial_value">0.0</param></command_interface>
+      </xacro:if>
+      <state_interface name="position"><param name="initial_value">0.0</param></state_interface>
+      <state_interface name="velocity"/>
+      <state_interface name="effort"/>
+    </joint>
+    <joint name="hind_right_abad_joint">
+      <xacro:if value="${hardware_target == 'gazebo'}">
+        <command_interface name="effort"><param name="initial_value">0.0</param></command_interface>
+      </xacro:if>
+      <xacro:if value="${hardware_target == 'real'}">
+        <command_interface name="position"><param name="initial_value">0.0</param></command_interface>
+        <command_interface name="kp"><param name="initial_value">0.0</param></command_interface>
+        <command_interface name="kd"><param name="initial_value">0.0</param></command_interface>
+      </xacro:if>
+      <state_interface name="position"><param name="initial_value">0.0</param></state_interface>
+      <state_interface name="velocity"/>
+      <state_interface name="effort"/>
+    </joint>
+    <joint name="hind_right_hip_joint">
+      <xacro:if value="${hardware_target == 'gazebo'}">
+        <command_interface name="effort"><param name="initial_value">0.0</param></command_interface>
+      </xacro:if>
+      <xacro:if value="${hardware_target == 'real'}">
+        <command_interface name="position"><param name="initial_value">0.0</param></command_interface>
+        <command_interface name="kp"><param name="initial_value">0.0</param></command_interface>
+        <command_interface name="kd"><param name="initial_value">0.0</param></command_interface>
+      </xacro:if>
+      <state_interface name="position"><param name="initial_value">0.0</param></state_interface>
+      <state_interface name="velocity"/>
+      <state_interface name="effort"/>
+    </joint>
+    <joint name="hind_right_knee_joint">
+      <xacro:if value="${hardware_target == 'gazebo'}">
+        <command_interface name="effort"><param name="initial_value">0.0</param></command_interface>
+      </xacro:if>
+      <xacro:if value="${hardware_target == 'real'}">
+        <command_interface name="position"><param name="initial_value">0.0</param></command_interface>
+        <command_interface name="kp"><param name="initial_value">0.0</param></command_interface>
+        <command_interface name="kd"><param name="initial_value">0.0</param></command_interface>
+      </xacro:if>
+      <state_interface name="position"><param name="initial_value">0.0</param></state_interface>
+      <state_interface name="velocity"/>
+      <state_interface name="effort"/>
+    </joint>
+    <joint name="hind_left_abad_joint">
+      <xacro:if value="${hardware_target == 'gazebo'}">
+        <command_interface name="effort"><param name="initial_value">0.0</param></command_interface>
+      </xacro:if>
+      <xacro:if value="${hardware_target == 'real'}">
+        <command_interface name="position"><param name="initial_value">0.0</param></command_interface>
+        <command_interface name="kp"><param name="initial_value">0.0</param></command_interface>
+        <command_interface name="kd"><param name="initial_value">0.0</param></command_interface>
+      </xacro:if>
+      <state_interface name="position"><param name="initial_value">0.0</param></state_interface>
+      <state_interface name="velocity"/>
+      <state_interface name="effort"/>
+    </joint>
+    <joint name="hind_left_hip_joint">
+      <xacro:if value="${hardware_target == 'gazebo'}">
+        <command_interface name="effort"><param name="initial_value">0.0</param></command_interface>
+      </xacro:if>
+      <xacro:if value="${hardware_target == 'real'}">
+        <command_interface name="position"><param name="initial_value">0.0</param></command_interface>
+        <command_interface name="kp"><param name="initial_value">0.0</param></command_interface>
+        <command_interface name="kd"><param name="initial_value">0.0</param></command_interface>
+      </xacro:if>
+      <state_interface name="position"><param name="initial_value">0.0</param></state_interface>
+      <state_interface name="velocity"/>
+      <state_interface name="effort"/>
+    </joint>
+    <joint name="hind_left_knee_joint">
+      <xacro:if value="${hardware_target == 'gazebo'}">
+        <command_interface name="effort"><param name="initial_value">0.0</param></command_interface>
+      </xacro:if>
+      <xacro:if value="${hardware_target == 'real'}">
+        <command_interface name="position"><param name="initial_value">0.0</param></command_interface>
+        <command_interface name="kp"><param name="initial_value">0.0</param></command_interface>
+        <command_interface name="kd"><param name="initial_value">0.0</param></command_interface>
+      </xacro:if>
+      <state_interface name="position"><param name="initial_value">0.0</param></state_interface>
+      <state_interface name="velocity"/>
+      <state_interface name="effort"/>
+    </joint>
+    <!-- No imu_sensor <sensor> block here (yet) - the real robot has no IMU
+         wired to the STM32 yet, so the sim intentionally matches that instead
+         of reading a sensor the real controller can't use. See sensors/imu.xacro
+         and the note at the top of babydog.xacro for how to re-add it later. -->
+  </ros2_control>
+
+  <!-- Chi Gazebo doc block nay (moi hardware khac im lang bo qua the <gazebo> khong
+       hieu) - gz_ros2_control's plugin tu doc controllers.yaml + host controller_manager
+       ben trong process Gazebo. Voi hardware:=real, real_ros2_control.launch.py khong
+       goi gz_sim nen block nay khong duoc dung toi, nhung vo hai neu con trong URDF. -->
+  <gazebo>
+    <plugin filename="libgz_ros2_control-system.so"
+            name="gz_ros2_control::GazeboSimROS2ControlPlugin">
+      <parameters>$(find main_bot)/config/controllers.yaml</parameters>
+    </plugin>
+  </gazebo>
+</robot>

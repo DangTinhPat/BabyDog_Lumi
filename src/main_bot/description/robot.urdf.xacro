@@ -1,0 +1,15 @@
+<?xml version="1.0"?>
+<!-- Top-level entry point for the babydog description: this is the file launch
+     files xacro-process, not babydog.xacro directly. Currently just the
+     physical structure - no sensors/*.xacro included yet since the real robot
+     has no IMU/cameras wired up in this phase (stand up / sit down only).
+     Once the real IMU is on the FDCAN link, add back:
+       <xacro:include filename="$(find main_bot)/description/sensors/imu.xacro"/>
+     (and the matching imu_sensor block in babydog.xacro + imu_sensor_broadcaster
+     in config/controllers.yaml - see comments there). -->
+<robot name="babydog" xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <xacro:include filename="$(find main_bot)/description/babydog.xacro"/>
+  <xacro:include filename="$(find main_bot)/description/babydog.ros2_control.xacro"/>
+
+</robot>

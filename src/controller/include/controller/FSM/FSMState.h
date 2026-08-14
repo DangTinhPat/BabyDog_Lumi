@@ -1,0 +1,38 @@
+#ifndef CONTROLLER_FSMSTATE_H
+#define CONTROLLER_FSMSTATE_H
+
+#include <string>
+#include <utility>
+#include <controller/common/enumClass.h>
+#include <controller/CtrlInterfaces.h>
+#include <rclcpp/rclcpp.hpp>
+
+class FSMState
+{
+public:
+    virtual ~FSMState() = default;
+
+    FSMState(const FSMStateName& state_name, std::string state_name_string, CtrlInterfaces& ctrl_interfaces)
+        : state_name(state_name),
+          state_name_string(std::move(state_name_string)),
+          ctrl_interfaces_(ctrl_interfaces)
+    {
+    }
+
+    virtual void enter() = 0;
+
+    virtual void run(const rclcpp::Time& time,
+                     const rclcpp::Duration& period) = 0;
+
+    virtual void exit() = 0;
+
+    virtual FSMStateName checkChange() { return FSMStateName::INVALID; }
+
+    FSMStateName state_name;
+    std::string state_name_string;
+
+protected:
+    CtrlInterfaces& ctrl_interfaces_;
+};
+
+#endif //CONTROLLER_FSMSTATE_H
