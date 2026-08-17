@@ -20,11 +20,11 @@
        khop = 0.0 CHINH LA tu the nghi tu nhien, va nam trong <limit> hop le
        (knee's limit hien la lower="-2.269" upper="0.0" - 0.0 la bien tren hop
        le, KHONG con bi loai tru nhu truoc). TRUOC DAY gia tri nay hardcode
-       theo stand_pos_ (-0.748/1.495) vi luc do 0 nam NGOAI limit khop goi
+       theo pose Stand cu (-0.748/1.495) vi luc do 0 nam NGOAI limit khop goi
        (lower="0.436" cu) - da lac hau tu khi hieu chinh origin/limit, gay
        robot spawn sai dang (chan xoe ngang) du code KHONG lien quan gi den
-       cac thay doi khac - PHAI giu dung 0.0 o day, khong tu y doi lai theo
-       stand_pos moi truong hop tuong tu trong tuong lai. effort la command_interface cho
+       cac thay doi khac - PHAI giu dung 0.0 o day, khong tu y doi initial state
+       theo target Stand trong tuong lai. effort la command_interface cho
        hardware_target=gazebo only - it's what leg_pd_controller (the
        low-level layer of the vendored gait stack) actually claims;
        hardware_target=real exports position/kp/kd instead (matches

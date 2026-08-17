@@ -4,18 +4,15 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-/* micro-ROS node "stm32_joint_node" - thay the JOINT_CMD_CAN_ID/JOINT_FB_CAN_ID cu
- * (protocol.h) bang subscriber "/joint_cmd" + publisher "/joint_fb"
+/* micro-ROS node "stm32_joint_node" voi subscriber "/joint_cmd" + publisher "/joint_fb"
  * (main_bot_hardware_msgs), qua UART1/micro_ros_agent thay vi CAN. Cung reconnect
  * state machine (ping dinh ky khi da connected) voi OUT_SAVE/testSTM/app/src/microros_bridge.c,
  * nhung KHONG FreeRTOS (dung Tick_GetMs() thay xTaskGetTickCount(), khong goi
  * MicroRos_InstallFreeRTOSAllocator() - xem microros_time.c va ghi chu trong .c).
  *
  * Callback subscription goi thang Actuator_SetTarget() (actuator_if.h) va tu cap nhat
- * timestamp lan cuoi nhan duoc /joint_cmd - main.c doc lai qua
- * MicroRosBridge_LastJointCmdMs() de quyet dinh co bo qua FSM_Update() hay khong
- * (JOINT_LINK_TIMEOUT_MS, protocol.h), giu nguyen y nghia "che do relay" da co khi con
- * dung CAN, chi doi nguon cap nhat. */
+ * timestamp lan cuoi nhan duoc /joint_cmd. main.c dung timestamp nay cho watchdog:
+ * mat lenh thi ngat luc, khong chay FSM hay fallback ve goc co dinh. */
 void MicroRosBridge_Begin(void);
 
 /* Goi moi vong superloop cua main() (KHONG sleep/block ben trong) - tu quan ly ket noi/

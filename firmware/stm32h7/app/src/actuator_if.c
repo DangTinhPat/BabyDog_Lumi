@@ -1,5 +1,5 @@
 #include "actuator_if.h"
-#include "motor_protocol.h"
+#include "motor_topology.h"
 #include "motor_calib.h"
 #include "baby_alpha2_protocol.h"
 #include "can.h"
@@ -91,7 +91,7 @@ static bool match_setup(const CAN_Frame *rx, uint32_t id) { return rx->data_len 
 static bool match_page0(const CAN_Frame *rx, uint32_t id) { return rx->data_len >= 12U && rx->data[0] == BA2_REPLY_PAGE0(id); }
 
 /* Gửi rồi chờ đúng phản hồi mong đợi (retry nếu timeout) - MỌI phản hồi
- * BabyAlpha2 về CAN ID=0 (xem motor_protocol.h header), phân biệt bằng
+ * BabyAlpha2 về CAN ID=0 (xem motor_topology.h header), phân biệt bằng
  * data[0] qua tham số m/id. CHỈ dùng trong Actuator_Init() (trước khi
  * main.c vào vòng lặp chính) - đây là nơi DUY NHẤT khác main.c tự gọi
  * CAN_Receive(), an toàn vì không có ai khác đọc FIFO cùng lúc lúc boot. */

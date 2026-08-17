@@ -3,7 +3,7 @@
 <package format="3">
     <name>controller</name>
     <version>0.0.0</version>
-    <description>ros2_control controller: stand up / sit down FSM (no gait, no active balance yet) + FK/IK (KDL, ported from superDog's unitree_guide_controller) used for static Tff (gravity feedforward, sim only, off by default)</description>
+    <description>ros2_control Cartesian stand/sit FSM using KDL FK/IK, with optional static gravity feedforward in simulation</description>
     <maintainer email="dangtinh.ftcpy@gmail.com">dvt</maintainer>
     <license>Apache-2.0</license>
 
@@ -18,6 +18,7 @@
     <depend>hardware_interface</depend>
     <depend>std_msgs</depend>
     <depend>kdl_parser</depend>
+    <depend>urdf</depend>
 
     <exec_depend>controller_manager</exec_depend>
     <exec_depend>joint_state_broadcaster</exec_depend>

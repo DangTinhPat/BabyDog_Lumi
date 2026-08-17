@@ -5,7 +5,7 @@
  *          đếm lên, không ngắt) thay vì lib/systick.h - systick.h của thư
  *          viện dùng cho delay CHẶN (blocking, tự bật/tắt SysTick mỗi lần
  *          gọi), không phù hợp để vừa đo thời gian trôi qua vừa chạy vòng
- *          lặp chính không-chặn (non-blocking) như stand_sit_fsm.c cần.
+ *          lặp chính không-chặn (non-blocking) và watchdog /joint_cmd cần.
  *
  * ===== LỊCH SỬ LỖI (đã đo thật trên phần cứng, xác nhận qua dự án oneLeg) =====
  *

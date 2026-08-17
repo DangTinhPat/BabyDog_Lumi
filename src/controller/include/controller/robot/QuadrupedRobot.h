@@ -30,6 +30,12 @@ public:
 
     [[nodiscard]] Vec12 getQ(const Vec34 &vecP) const;
 
+    /** Solve position-only IK for all four feet using one seed per leg. */
+    [[nodiscard]] bool solveFootIK(const std::vector<KDL::Vector> &foot_positions,
+                                   const std::vector<KDL::JntArray> &q_seed,
+                                   std::vector<KDL::JntArray> &q_out,
+                                   int *failed_leg = nullptr) const;
+
     Vec12 getQd(const std::vector<KDL::Frame> &pos, const Vec34 &vel);
 
     /**
@@ -37,6 +43,10 @@ public:
      * @return vector of foot-end position
      */
     [[nodiscard]] std::vector<KDL::Frame> getFeet2BPositions() const;
+
+    /** FK from an explicit, coherent four-leg joint snapshot. */
+    [[nodiscard]] std::vector<KDL::Frame> getFeet2BPositions(
+        const std::vector<KDL::JntArray> &joint_positions) const;
 
     /**
      * Calculate the foot end position based on joint positions

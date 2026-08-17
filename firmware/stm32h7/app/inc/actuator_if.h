@@ -3,7 +3,7 @@
  * @file    actuator_if.h
  * @brief   Lớp trừu tượng cho 12 khớp chân - mỗi khớp có 1 board driver
  *          BabyAlpha2 riêng (tự làm PD cục bộ, đọc encoder tại chỗ), nói
- *          chuyện qua CAN-FD 12 byte (baby_alpha2_protocol.h, motor_protocol.h)
+ *          chuyện qua CAN-FD 12 byte (baby_alpha2_protocol.h, motor_topology.h)
  *          - giao thức THẬT, kế thừa từ /home/dvt/OUT_SAVE/babyDog_test/oneLeg (đã
  *          chạy trên phần cứng thật), thay cho giao thức tự bịa trước đây.
  *
@@ -31,12 +31,12 @@ void Actuator_ReenableAll(void);
 
 /* Gọi bởi main.c cho MỖI frame nhận được từ CAN_Receive() có id==0 trên bất
  * kỳ instance nào (MỌI phản hồi BabyAlpha2 - PING/HANDSHAKE/SETUP/telemetry
- * Page0 - đều về chung ID này, phân biệt bằng data[0], xem motor_protocol.h
+ * Page0 - đều về chung ID này, phân biệt bằng data[0], xem motor_topology.h
  * header) - main.c là nơi duy nhất gọi CAN_Receive() cho mỗi instance
  * (tránh 2 nơi cùng rút frame khỏi 1 FIFO phần cứng). */
 void Actuator_OnBabyAlpha2Frame(uint32_t instance, const CAN_Frame *frame);
 
-/* angles_rad: 12 góc khớp mục tiêu (rad), thứ tự xem motor_protocol.h
+/* angles_rad: 12 góc khớp mục tiêu (rad), thứ tự xem motor_topology.h
  * (JointIndex_t) - khớp với stand_sit_controller (phía ROS2)'s joints list. */
 void Actuator_SetTarget(const float angles_rad[12], float kp, float kd);
 
@@ -52,7 +52,7 @@ void Actuator_GetLastTarget(float angles_rad[12]);
 
 /* Vi tri + van toc do duoc gan nhat tu feedback frame (0 neu khop do chua tung
  * co feedback) - dung cho main_bot_hardware (ros2_control that) relay ve RDK
- * qua JOINT_FB_CAN_ID (protocol.h). Khac Actuator_GetLastTarget() o cho ham
+ * qua topic /joint_fb. Khac Actuator_GetLastTarget() o cho ham
  * nay tra ve dung 0 khi chua co feedback thay vi fallback ve target, vi ROS2
  * can biet ro "chua co du lieu that" thay vi bi danh lua bang gia tri target. */
 void Actuator_GetMeasured(float angles_rad[12], float velocities_rad_s[12]);

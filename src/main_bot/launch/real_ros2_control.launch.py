@@ -28,11 +28,9 @@ controllers_real.yaml. joystick_bridge (không đổi, /control_input y hệt si
 `ros2 run joystick_bridge keyboard_input` ở terminal khác, giống hệt hướng dẫn sim
 trong GUIDE.md.
 
-firmware/stm32h7 vẫn giữ protocol CAN Stand/Sit/Estop cũ (CMD_CAN_ID/STATUS_CAN_ID,
-stand_sit_fsm.c) làm fallback nội bộ - nếu /joint_cmd mất liên kết (JOINT_LINK_TIMEOUT_MS,
-protocol.h), firmware tự rơi về FSM cục bộ. Node ROS2 Python từng forward lệnh qua đường
-CAN đó (fdcan_bridge) đã bị xoá vì không còn dùng - đường ros2_control ở đây đã thay thế
-hoàn toàn vai trò của nó.
+firmware/stm32h7 không chạy FSM/góc đặt sẵn. FSM, FK và IK nằm hoàn toàn ở controller
+ROS2; firmware chỉ relay /joint_cmd tới driver khớp. Nếu mất /joint_cmd, watchdog firmware
+ngắt lực thay vì rơi về một tư thế cố định.
 """
 
 import os

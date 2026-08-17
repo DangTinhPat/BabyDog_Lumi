@@ -3,6 +3,7 @@
 
 #include <iostream>
 #include <stdexcept>
+#include <urdf/model.h>
 #include "controller/CtrlInterfaces.h"
 #include "controller/robot/QuadrupedRobot.h"
 
@@ -39,11 +40,37 @@ QuadrupedRobot::QuadrupedRobot(CtrlInterfaces &ctrl_interfaces, const std::strin
     }
 
 
+    urdf::Model urdf_model;
+    if (!urdf_model.initString(robot_description)) {
+        throw std::runtime_error("QuadrupedRobot: khong parse duoc URDF de doc joint limits");
+    }
+
+    const std::vector<KDL::Chain> chains = {fr_chain_, fl_chain_, rr_chain_, rl_chain_};
     robot_legs_.resize(4);
-    robot_legs_[0] = std::make_shared<RobotLeg>(fr_chain_);
-    robot_legs_[1] = std::make_shared<RobotLeg>(fl_chain_);
-    robot_legs_[2] = std::make_shared<RobotLeg>(rr_chain_);
-    robot_legs_[3] = std::make_shared<RobotLeg>(rl_chain_);
+    for (int leg = 0; leg < 4; ++leg) {
+        const auto joint_count = chains[leg].getNrOfJoints();
+        KDL::JntArray q_min(joint_count);
+        KDL::JntArray q_max(joint_count);
+        unsigned int joint_index = 0;
+        for (unsigned int segment = 0; segment < chains[leg].getNrOfSegments(); ++segment) {
+            const KDL::Joint &kdl_joint = chains[leg].getSegment(segment).getJoint();
+            if (kdl_joint.getType() == KDL::Joint::None) {
+                continue;
+            }
+            const auto urdf_joint = urdf_model.getJoint(kdl_joint.getName());
+            if (!urdf_joint || !urdf_joint->limits || joint_index >= joint_count) {
+                throw std::runtime_error("QuadrupedRobot: thieu limit cho joint \"" +
+                                         kdl_joint.getName() + "\"");
+            }
+            q_min(joint_index) = urdf_joint->limits->lower;
+            q_max(joint_index) = urdf_joint->limits->upper;
+            ++joint_index;
+        }
+        if (joint_index != joint_count) {
+            throw std::runtime_error("QuadrupedRobot: so joint limit khong khop KDL chain");
+        }
+        robot_legs_[leg] = std::make_shared<RobotLeg>(chains[leg], q_min, q_max);
+    }
 
     current_joint_pos_.resize(4);
     current_joint_vel_.resize(4);
@@ -85,6 +112,25 @@ Vec12 QuadrupedRobot::getQ(const Vec34 &vecP) const {
     return q;
 }
 
+bool QuadrupedRobot::solveFootIK(const std::vector<KDL::Vector> &foot_positions,
+                                 const std::vector<KDL::JntArray> &q_seed,
+                                 std::vector<KDL::JntArray> &q_out,
+                                 int *failed_leg) const {
+    if (foot_positions.size() != 4 || q_seed.size() != 4) {
+        if (failed_leg) *failed_leg = -1;
+        return false;
+    }
+    std::vector<KDL::JntArray> candidate(4);
+    for (int leg = 0; leg < 4; ++leg) {
+        if (!robot_legs_[leg]->calcQPosition(foot_positions[leg], q_seed[leg], candidate[leg])) {
+            if (failed_leg) *failed_leg = leg;
+            return false;
+        }
+    }
+    q_out = std::move(candidate);
+    return true;
+}
+
 Vec12 QuadrupedRobot::getQd(const std::vector<KDL::Frame> &pos, const Vec34 &vel) {
     Vec12 qd;
     const std::vector<KDL::JntArray> q = getQ(pos);
@@ -96,10 +142,20 @@ Vec12 QuadrupedRobot::getQd(const std::vector<KDL::Frame> &pos, const Vec34 &vel
 }
 
 std::vector<KDL::Frame> QuadrupedRobot::getFeet2BPositions() const {
+    return getFeet2BPositions(current_joint_pos_);
+}
+
+std::vector<KDL::Frame> QuadrupedRobot::getFeet2BPositions(
+    const std::vector<KDL::JntArray> &joint_positions) const {
     std::vector<KDL::Frame> result;
+    if (joint_positions.size() != 4) {
+        return result;
+    }
     result.resize(4);
     for (int i = 0; i < 4; i++) {
-        result[i] = robot_legs_[i]->calcPEe2B(current_joint_pos_[i]);
+        if (!robot_legs_[i]->calcPEe2B(joint_positions[i], result[i])) {
+            return {};
+        }
         result[i].M = KDL::Rotation::Identity();
     }
     return result;

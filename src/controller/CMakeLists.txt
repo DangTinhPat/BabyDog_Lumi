@@ -15,6 +15,7 @@ set(CONTROLLER_INCLUDE_DEPENDS
         realtime_tools
         std_msgs
         kdl_parser
+        urdf
 )
 
 find_package(ament_cmake REQUIRED)

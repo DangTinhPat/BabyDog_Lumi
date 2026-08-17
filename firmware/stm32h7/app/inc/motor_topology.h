@@ -1,6 +1,6 @@
 /**
  ******************************************************************************
- * @file    motor_protocol.h
+ * @file    motor_topology.h
  * @brief   Dinh danh 12 khop + tra cuu bus/ID/loai-khop/nhom-chan cho giao
  *          thuc BabyAlpha2 (CAN-FD, xem baby_alpha2_protocol.h) giua STM32H7
  *          (main board) va 12 board driver dong co that o moi khop. Ke thua
@@ -22,8 +22,8 @@
  *          CAN ID nhu ban giao thuc tu bia truoc day. Xem actuator_if.c.
  ******************************************************************************
  */
-#ifndef MOTOR_PROTOCOL_H
-#define MOTOR_PROTOCOL_H
+#ifndef MOTOR_TOPOLOGY_H
+#define MOTOR_TOPOLOGY_H
 
 #include <stdint.h>
 #include "can.h" /* CAN_INSTANCE_1/2 */
@@ -97,4 +97,4 @@ static inline LegGroup_t Motor_LegGroupForJoint(JointIndex_t joint)
     return (LegGroup_t)((uint32_t)joint / 3U);
 }
 
-#endif /* MOTOR_PROTOCOL_H */
+#endif /* MOTOR_TOPOLOGY_H */

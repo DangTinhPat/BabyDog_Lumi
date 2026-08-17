@@ -1,5 +1,8 @@
 #include "controller/StandSitController.h"
 
+#include <algorithm>
+#include <cmath>
+
 namespace controller
 {
     using config_type = controller_interface::interface_configuration_type;
@@ -46,12 +49,11 @@ namespace controller
     controller_interface::return_type StandSitController::
     update(const rclcpp::Time& time, const rclcpp::Duration& period)
     {
-        // Cap nhat cache vi tri/van toc cho FK/IK (Tff, xem StateHoldPose::run()) -
-        // KHONG return som neu con null (chi tat Tff, KHONG duoc chan Passive/Stand/
-        // Sit chay - khac superDog's UnitreeGuideController co
-        // "if (robot_model_ == nullptr) return OK;" chan toan bo FSM, khong phu hop
-        // o day vi core function (giu tu the) phai luon chay du /robot_description
-        // co toi kip hay khong).
+        // Refresh measured q/qd for Jacobian/Tff. Stand/Sit takes a coherent
+        // feedback snapshot directly when entering and then runs IK from its
+        // last valid command seed. Do not return early while the model is null:
+        // Passive and ESTOP must still run; a requested pose waits safely at
+        // kp=0 until /robot_description has produced a valid model.
         // std::atomic_load thay vi doc thang robot_model_ - shared_ptr KHONG an toan
         // doc/ghi dong thoi giua nhieu luong (luong RT nay vs luong executor chay
         // callback /robot_description ben duoi, co the chay lai bat ky luc nao neu
@@ -98,19 +100,33 @@ namespace controller
                 auto_declare<std::vector<std::string>>("state_interfaces", state_interface_types_);
             command_prefix_ = auto_declare<std::string>("command_prefix", command_prefix_);
 
-            sit_pos_ = auto_declare<std::vector<double>>("sit_pos", sit_pos_);
-            stand_pos_ = auto_declare<std::vector<double>>("stand_pos", stand_pos_);
+            sit_foot_positions_ = auto_declare<std::vector<double>>(
+                "sit_foot_positions", sit_foot_positions_);
+            stand_foot_positions_ = auto_declare<std::vector<double>>(
+                "stand_foot_positions", stand_foot_positions_);
             // Kiem tra kich thuoc TRUOC khi bat ky ai index [0..11] (StateHoldPose's
             // constructor khong tu kiem tra) - 1 mang YAML thieu/thua phan tu (loi
             // copy-paste) se gay doc ngoai vung std::vector (UB), dung loai bug da tung
             // gap that voi .value() truoc do. Fail som, ro rang, o day thay vi crash
             // mo ho sau trong StateHoldPose.
-            if (stand_pos_.size() != 12 || sit_pos_.size() != 12)
+            if (stand_foot_positions_.size() != 12 || sit_foot_positions_.size() != 12)
             {
                 RCLCPP_ERROR(get_node()->get_logger(),
-                             "stand_pos (%zu phan tu) / sit_pos (%zu phan tu) phai co dung 12 "
-                             "(1 moi khop) - kiem tra lai controllers.yaml/controllers_real.yaml",
-                             stand_pos_.size(), sit_pos_.size());
+                             "stand_foot_positions (%zu) / sit_foot_positions (%zu) phai co "
+                             "dung 12 gia tri (xyz x 4 chan)",
+                             stand_foot_positions_.size(), sit_foot_positions_.size());
+                return controller_interface::CallbackReturn::ERROR;
+            }
+            const auto valid_cartesian_target = [](const std::vector<double>& target) {
+                return std::all_of(target.begin(), target.end(), [](const double value) {
+                    return std::isfinite(value) && std::abs(value) <= 1.0;
+                });
+            };
+            if (!valid_cartesian_target(stand_foot_positions_) ||
+                !valid_cartesian_target(sit_foot_positions_))
+            {
+                RCLCPP_ERROR(get_node()->get_logger(),
+                             "Cartesian foot targets phai huu han va nam trong +/-1 m");
                 return controller_interface::CallbackReturn::ERROR;
             }
 
@@ -133,6 +149,12 @@ namespace controller
 
             stand_duration_ = auto_declare<double>("stand_duration", stand_duration_);
             sit_duration_ = auto_declare<double>("sit_duration", sit_duration_);
+            if (!std::isfinite(stand_duration_) || !std::isfinite(sit_duration_) ||
+                stand_duration_ <= 0.0 || sit_duration_ <= 0.0)
+            {
+                RCLCPP_ERROR(get_node()->get_logger(), "stand_duration/sit_duration phai > 0");
+                return controller_interface::CallbackReturn::ERROR;
+            }
 
             base_name_ = auto_declare<std::string>("base_name", base_name_);
             feet_names_ = auto_declare<std::vector<std::string>>("feet_names", feet_names_);
@@ -169,10 +191,10 @@ namespace controller
                 ctrl_interfaces_.control_inputs_.command = msg->command;
             });
 
-        // FK/IK (Tff) - nap robot_model_ ngay khi co /robot_description (transient_local
+        // FK/IK model - nap ngay khi co /robot_description (transient_local
         // nen se nhan duoc ban tin da publish truoc do neu robot_state_publisher da
-        // chay roi). CO THE con null 1 luc dau neu chua toi kip - KHONG sao, xem
-        // update() (khong chan FSM, chi tat Tff tam thoi).
+        // chay roi). Neu con null luc vua khoi dong, Stand/Sit giu kp=0 va cho;
+        // Passive/ESTOP van hoat dong binh thuong.
         robot_description_subscription_ = get_node()->create_subscription<std_msgs::msg::String>(
             "/robot_description", rclcpp::QoS(rclcpp::KeepLast(1)).transient_local(),
             [this](const std_msgs::msg::String::SharedPtr msg)
@@ -180,8 +202,8 @@ namespace controller
                 // QuadrupedRobot() co the nem std::runtime_error (base_name/feet_names sai
                 // ten link trong URDF, xem QuadrupedRobot.cpp) - bat lai o day thay vi de
                 // executor thread crash: log ro rang, robot_model_ giu nguyen (null hoac ban
-                // cu con hoat dong duoc) - Tff tu dong tat/giu trang thai cu, KHONG anh huong
-                // Passive/Stand/Sit (core function).
+                // cu con hoat dong duoc). Neu khong co model hop le, Stand/Sit se
+                // khong cap lenh vi tri (kp=0), thay vi phat ket qua IK khong tin cay.
                 try
                 {
                     auto new_model =
@@ -197,8 +219,8 @@ namespace controller
                 catch (const std::exception& e)
                 {
                     RCLCPP_ERROR(get_node()->get_logger(),
-                                 "Khong nap duoc QuadrupedRobot tu /robot_description: %s - Tff se "
-                                 "khong hoat dong (Passive/Stand/Sit khong bi anh huong)",
+                                 "Khong nap duoc QuadrupedRobot tu /robot_description: %s - "
+                                 "Stand/Sit se cho an toan voi kp=0",
                                  e.what());
                 }
             });
@@ -235,10 +257,10 @@ namespace controller
         // Create FSM List
         state_list_.passive = std::make_shared<StatePassive>(ctrl_interfaces_);
         state_list_.stand = std::make_shared<StateHoldPose>(
-            ctrl_interfaces_, FSMStateName::STAND, "stand", stand_pos_, stand_kp_, stand_kd_, stand_duration_,
+            ctrl_interfaces_, FSMStateName::STAND, "stand", stand_foot_positions_, stand_kp_, stand_kd_, stand_duration_,
             robot_model_, tau_ff_scale_, tau_ff_max_nm_);
         state_list_.sit = std::make_shared<StateHoldPose>(
-            ctrl_interfaces_, FSMStateName::SIT, "sit", sit_pos_, sit_kp_, sit_kd_, sit_duration_,
+            ctrl_interfaces_, FSMStateName::SIT, "sit", sit_foot_positions_, sit_kp_, sit_kd_, sit_duration_,
             robot_model_, tau_ff_scale_, tau_ff_max_nm_);
 
         // Initialize FSM

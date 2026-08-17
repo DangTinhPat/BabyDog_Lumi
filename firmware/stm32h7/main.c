@@ -4,15 +4,12 @@
  * @brief   Firmware STM32H7 (board FK743M5-XIH6) - giai đoạn đứng lên/ngồi
  *          xuống, dùng thư viện lib/ (rcc/gpio/can/usart/tick).
  *
- *          - RDK X5/laptop <-> STM32 (đường dự phòng, fdcan_bridge): CAN FD
- *            (CAN_INSTANCE_1, PA11/PA12) - lệnh Stand/Sit/Estop (protocol.h),
- *            khớp fdcan_bridge/protocol.py.
  *          - RDK X5/laptop <-> STM32 (đường ros2_control, main_bot_hardware):
  *            micro-ROS qua UART1 (PA9/PA10) - subscriber "/joint_cmd" +
  *            publisher "/joint_fb" (xem microros_bridge.c) - THAY CAN, không
  *            đụng chân với FDCAN1/2 (PA11/12, PB5/6) hay board driver khớp.
  *          - STM32 <-> 12 board driver khớp (driver "BabyAlpha2"): CAN-FD 12
- *            byte (baby_alpha2_protocol.h/motor_protocol.h - giao thức THẬT,
+ *            byte (baby_alpha2_protocol.h/motor_topology.h - giao thức THẬT,
  *            kế thừa từ /home/dvt/OUT_SAVE/babyDog_test/oneLeg đã chạy trên phần cứng
  *            thật), 6 khớp trên CAN_INSTANCE_1 (cùng bus RDK-link cũ), 6 khớp
  *            trên CAN_INSTANCE_2 (PB5/PB6). Mỗi board driver tự chạy PD cục
@@ -34,10 +31,8 @@
 #include "can.h"
 #include "usart.h"
 #include "tick.h"
-#include "protocol.h"
-#include "motor_protocol.h"
+#include "motor_topology.h"
 #include "baby_alpha2_protocol.h"
-#include "stand_sit_fsm.h"
 #include "actuator_if.h"
 #include "microros_bridge.h"
 #include "microros_transport.h"
@@ -100,8 +95,8 @@
 #define LED_BLINK_PERIOD_MS  150U
 #define LED_ACTIVE_WINDOW_MS 1000U
 
-#define STATUS_SEND_PERIOD_MS 50U /* ~20Hz, chỉ để quan sát */
 #define JOINT_FB_SEND_PERIOD_MS 5U /* ~200Hz, khớp nhịp update_rate cua controllers_real.yaml */
+#define JOINT_CMD_TIMEOUT_MS 200U /* mat /joint_cmd -> ngat luc, khong fallback goc */
 
 /* Cung gia tri toi uu da xac nhan qua ~/OUT_SAVE/testSTM (18.4Hz -> 41.6Hz o baudrate
  * 115200 cu, xem ~/OUT_SAVE/testSTM/README.md) - agent phia laptop (micro_ros_agent
@@ -243,7 +238,7 @@ static void send_udec(USART_TypeDef *u, uint32_t v)
 }
 
 /* Bao cao trang thai bring-up cua 12 khop qua USART2 (xem usart2_debug_init())
- * - goi 1 lan ngay sau FSM_Init() (da chay xong Actuator_Init() ben trong,
+ * - goi 1 lan ngay sau Actuator_Init(),
  * blocking). Muc dich DUY NHAT: xac nhan bang mat tung khop co that su nhan
  * duoc phan hoi CAN-FD tu driver BabyAlpha2 vat ly hay khong (PING+HANDSHAKE+
  * MOTOR_ENABLE+doc HOME deu OK -> "READY"), truoc khi tin dung buoc di chuyen
@@ -270,8 +265,8 @@ static void print_joint_bringup_report(void)
 
 #if BRINGUP_PING_ONLY
 /* Che do bring-up TOI GIAN (xem BRINGUP_PING_ONLY o tren) - CO Y giu TACH
- * BIET hoan toan khoi actuator_if.c/stand_sit_fsm.c (khong goi ham nao cua 2
- * file do), tu gui/nhan CAN truc tiep bang can.h + baby_alpha2_protocol.h -
+ * BIET hoan toan khoi actuator_if.c (khong goi ham nao cua file do), tu
+ * gui/nhan CAN truc tiep bang can.h + baby_alpha2_protocol.h -
  * de nguoi doc/soat code chi can doc DUY NHAT ham nay la du xac nhan: KHONG
  * co opcode nao khac 0xF0 (PING) tung duoc gui di trong toan bo vong lap nay,
  * tuc la KHONG co kha nang dong co sinh luc trong che do nay du bat ky loi
@@ -435,12 +430,11 @@ int main(void)
     ping_only_bringup_loop(); /* khong tra ve - xem BRINGUP_PING_ONLY */
 #endif
 
-    FSM_Init(); /* goi luon Actuator_Init() ben trong */
+    Actuator_Init();
     print_joint_bringup_report();
 
     MicroRosBridge_Begin();
 
-    uint32_t last_status_ms = 0U;
     uint32_t last_joint_fb_ms = 0U;
     uint32_t last_led_toggle_ms = 0U;
     uint32_t last_reenable_ms = 0U;
@@ -463,16 +457,10 @@ int main(void)
          * duoc). */
         CAN_Frame rx;
 
-        /* Instance 1: xen ke CMD frame FD (RDK X5, CMD_CAN_ID, fdcan_bridge) va
-         * phan hoi BabyAlpha2 (id=0) cua 6 dong co chan truoc. */
+        /* Instance 1: phan hoi BabyAlpha2 (id=0) cua 6 dong co chan truoc. */
         while (CAN_IsRxPending(CAN_INSTANCE_1) && CAN_Receive(CAN_INSTANCE_1, &rx))
         {
-            if (rx.id == CMD_CAN_ID)
-            {
-                const CmdFrame_t *cmd = (const CmdFrame_t *)rx.data;
-                FSM_OnCommandReceived(cmd->command, cmd->seq, now_ms);
-            }
-            else if (rx.id == 0U)
+            if (rx.id == 0U)
             {
                 Actuator_OnBabyAlpha2Frame(CAN_INSTANCE_1, &rx);
             }
@@ -487,24 +475,9 @@ int main(void)
             }
         }
 
-        /* Che do relay (ros2_control that qua main_bot_hardware, gio qua micro-ROS/
-         * UART thay CAN) dang tich cuc neu /joint_cmd toi deu dan - bo qua
-         * FSM_Update() (stand_sit_fsm.c) de khoi tranh chap lenh voi
-         * Actuator_SetTarget() ROS2 (goi tu MicroRosBridge_SpinSome() o tren). Mat
-         * lien ket nay (JOINT_LINK_TIMEOUT_MS) -> roi ve FSM cu, KHONG doi hanh vi
-         * an toan da co (protocol.h). */
-        if ((now_ms - MicroRosBridge_LastJointCmdMs()) >= JOINT_LINK_TIMEOUT_MS)
-        {
-            FSM_Update(now_ms);
-        }
-
-        /* Watchdog rieng cho duong /joint_cmd (micro-ROS, duong robot THAT) -
-         * FSM_Update() o tren KHONG bao gio tu that luc duoc tren duong nay
-         * (g_ever_received_cmd cua stand_sit_fsm.c chi duoc set qua
-         * FSM_OnCommandReceived(), goi tu CMD_CAN_ID phia tren - duong CAN cu,
-         * khong bao gio duoc goi khi dung micro-ROS thay CAN nhu o day). Neu
-         * laptop crash/rut UART giua luc robot dang dung, khong co watchdog
-         * nay thi moi driver board cu giu nguyen lenh PD cuoi cung MAI MAI
+        /* Watchdog cho /joint_cmd (micro-ROS, duong robot THAT). Neu laptop
+         * crash/rut UART giua luc robot dang dung, khong co watchdog nay thi
+         * moi driver board cu giu nguyen lenh PD cuoi cung MAI MAI
          * (khong ai chu dong tat luc). Da xac nhan qua security review truoc
          * khi ket noi phan cung that - fix nay chu dong Actuator_Disable()
          * MOT LAN moi lan phat hien mat lien ket (dung last_joint_cmd_ms lam
@@ -514,7 +487,7 @@ int main(void)
          * Actuator_Init() roi, khong can goi lai). */
         const uint32_t last_joint_cmd_ms = MicroRosBridge_LastJointCmdMs();
         if (last_joint_cmd_ms != 0U &&
-            (now_ms - last_joint_cmd_ms) >= JOINT_LINK_TIMEOUT_MS &&
+            (now_ms - last_joint_cmd_ms) >= JOINT_CMD_TIMEOUT_MS &&
             joint_cmd_disable_latch_ms != last_joint_cmd_ms)
         {
             Actuator_Disable();
@@ -554,27 +527,5 @@ int main(void)
             GPIO_WritePin(GPIOC, 13U, 1U); /* active LOW -> 1 = tat */
         }
 
-        if ((now_ms - last_status_ms) >= STATUS_SEND_PERIOD_MS)
-        {
-            last_status_ms = now_ms;
-
-            StatusFrame_t status = {0};
-            status.fsm_state = (uint8_t)FSM_GetState();
-            status.settled = (uint8_t)FSM_IsSettled();
-            status.fault_flags = FSM_GetFaultFlags();
-            status.last_seq = FSM_GetLastSeq();
-
-            CAN_Frame frame = {0};
-            frame.id = STATUS_CAN_ID;
-            frame.extended_id = false;
-            frame.fd_format = true; /* CAN FD - theo yeu cau, link RDK X5 dung FD */
-            frame.bit_rate_switch = false;
-            frame.data_len = sizeof(StatusFrame_t);
-            for (uint32_t b = 0; b < sizeof(StatusFrame_t); b++)
-            {
-                frame.data[b] = ((const uint8_t *)&status)[b];
-            }
-            (void)CAN_Transmit(CAN_INSTANCE_1, &frame);
-        }
     }
 }

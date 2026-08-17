@@ -63,17 +63,19 @@ namespace controller
         std::vector<std::string> state_interface_types_;
         std::string command_prefix_;
 
-        std::vector<double> stand_pos_ = {
-            0.0, -0.748, 1.495,
-            0.0, -0.748, 1.495,
-            0.0, -0.748, 1.495,
-            0.0, -0.748, 1.495
+        // Foot targets in body frame, ordered FR/FL/RR/RL and xyz per foot.
+        // IK generates joint commands online; these are not joint angles.
+        std::vector<double> stand_foot_positions_ = {
+             0.176, -0.1295, -0.22,
+             0.176,  0.1295, -0.22,
+            -0.176, -0.1295, -0.22,
+            -0.176,  0.1295, -0.22
         };
-        std::vector<double> sit_pos_ = {
-            0.0, -1.231, 2.462,
-            0.0, -1.231, 2.462,
-            0.0, -1.231, 2.462,
-            0.0, -1.231, 2.462
+        std::vector<double> sit_foot_positions_ = {
+             0.176, -0.1295, -0.10,
+             0.176,  0.1295, -0.10,
+            -0.176, -0.1295, -0.10,
+            -0.176,  0.1295, -0.10
         };
 
         double stand_kp_ = 30.0;
@@ -81,7 +83,7 @@ namespace controller
         double sit_kp_ = 30.0;
         double sit_kd_ = 1.5;
 
-        // Thoi gian noi suy tanh (giay) tu vi tri hien tai toi stand_pos_/sit_pos_ -
+        // Thoi gian noi suy tanh (giay) cua vi tri ban chan Cartesian -
         // rieng cho tung chieu vi sit thuong can cham hon stand de do soc co khi (xem
         // controllers.yaml/controllers_real.yaml). Mac dinh 1.2 khop gia tri cu (hardcode
         // truoc khi tach param nay).
@@ -93,10 +95,8 @@ namespace controller
         // FK/IK (KDL, port tu superDog - xem controller/robot/QuadrupedRobot.h). Nap
         // qua subscription /robot_description (transient_local, xem on_configure()) -
         // CO THE con null 1 thoi gian ngan luc moi activate neu /robot_description
-        // chua kip toi. KHONG duoc dung de chan Passive/Stand/Sit chay (xem update() -
-        // chi "if (robot_model_) robot_model_->update();", khong return som) - thieu
-        // robot_model_ chi tat tinh nang Tff (tu dong ve 0), khong anh huong PD vi tri
-        // dang hoat dong.
+        // chua kip toi. Passive/ESTOP van phai chay; StateHoldPose se giu kp=0 va
+        // cho model hop le truoc khi bat dau FK/IK.
         rclcpp::Subscription<std_msgs::msg::String>::SharedPtr robot_description_subscription_;
         std::shared_ptr<QuadrupedRobot> robot_model_;
         std::string base_name_ = "body";

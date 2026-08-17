@@ -40,21 +40,18 @@ Robot chó 4 chân thật (RDK X5 + STM32H7), giai đoạn cơ bản nhất: **c
                                     │   M5-XIH6, không HAL)    │
                                     │  - microros_bridge.c:    │
                                     │    node stm32_joint_node │
-                                    │  - stand_sit_fsm.c (FSM  │
-                                    │    dự phòng, protocol.h  │
-                                    │    CAN 0x100/0x101 cũ -  │
-                                    │    xem fdcan_bridge cũ,  │
-                                    │    đã bỏ)                │
+                                    │  - relay lệnh khớp +     │
+                                    │    watchdog ngắt lực     │
                                     │  - actuator_if.c: lệnh   │
                                     │    vị trí/kp/kd qua      │
-                                    │    Classic CAN cho 12    │
+                                    │    CAN-FD cho 12    │
                                     │    board driver khớp     │
                                     │    (mỗi khớp tự PD +     │
                                     │    PWM + encoder 6 dây)  │
                                     └─────────────────────────┘
 ```
 
-Cả 2 nhánh (mô phỏng/thực tế) dùng **chung** FSM logic (3 trạng thái Passive/Stand/Sit, cùng nội suy tanh 1.2s, cùng quy ước command) - chỉ khác nơi thực thi (ros2_control+Gazebo vs STM32 điều khiển động cơ thật qua FDCAN).
+Cả 2 nhánh (mô phỏng/thực tế) dùng FSM trong `stand_sit_controller`. Trên robot thật, controller chạy FK/IK rồi gửi lệnh khớp xuống STM32; firmware không tự chạy FSM hay chọn tư thế.
 
 ## Cấu trúc thư mục
 
@@ -88,7 +85,7 @@ Xem [GUIDE.md](GUIDE.md) - có `make sim`, `make stand`, `make sit`, v.v. để 
 
 ## Giới hạn đã biết / việc cần làm tiếp
 
-- **Chưa có IMU** (như đề bài) - `stand_sit_controller`/`stand_sit_fsm.c` chỉ giữ tư thế bằng PD góc khớp cố định, KHÔNG cân bằng chủ động khi bị đẩy (khác với `BaseFixedStand` bên superDog, vốn dùng Estimator+QP - cố tình bỏ vì cần IMU thật mà chưa có).
-- **12 động cơ, mỗi khớp có 1 board driver Classic CAN riêng** (tự làm PWM + đọc encoder 6 dây + thuật toán PD cục bộ tại chỗ) - `actuator_if.c` đã gửi lệnh vị trí/kp/kd + nhận feedback qua CAN cho cả 12 khớp (6 trên `CAN_INSTANCE_1` cùng bus RDK-link CAN FD, 6 trên `CAN_INSTANCE_2`), nhưng **giao thức CAN với board driver (`motor_protocol.h`) là TỰ ĐỊNH NGHĨA** - chưa có board driver thật để xác nhận/test, và mapping khớp->connector (P1-P12) trong `Motor_BusForJoint()` là giả định theo schematic, cần sửa lại theo cách bạn đấu dây thật.
-- **Bit-timing CAN 1Mbit/s + việc dùng chung bus `CAN_INSTANCE_1` (RDK-link CAN FD + 6 động cơ chân trước Classic CAN) chưa đo trên phần cứng thật** - `lib/can.c` mới test loopback nội bộ (không qua đường truyền vật lý), chưa qua bus CAN thật - xem mục "CHƯA kiểm tra" trong `firmware/stm32h7/README.md` trước khi nối vào bus thật.
+- **Chưa có IMU** (như đề bài) - `controller` trên RDK dùng FK/IK để tạo quỹ đạo bàn chân Cartesian rồi giữ kết quả bằng PD khớp, nhưng KHÔNG cân bằng chủ động khi bị đẩy (khác với `BaseFixedStand` bên superDog, vốn dùng Estimator+QP). Firmware STM32 chỉ nhận các góc do IK sinh ra qua `/joint_cmd`; nếu mất lệnh, watchdog ngắt lực thay vì fallback về góc đặt sẵn.
+- **12 động cơ, mỗi khớp có 1 board driver CAN-FD riêng** (tự làm PWM + đọc encoder 6 dây + thuật toán PD cục bộ tại chỗ) - `actuator_if.c` đã gửi lệnh vị trí/kp/kd + nhận feedback qua CAN cho cả 12 khớp (6 trên `CAN_INSTANCE_1` cùng bus RDK-link CAN FD, 6 trên `CAN_INSTANCE_2`), nhưng **giao thức CAN với board driver (`motor_topology.h`) là TỰ ĐỊNH NGHĨA** - chưa có board driver thật để xác nhận/test, và mapping khớp->connector (P1-P12) trong `Motor_BusForJoint()` là giả định theo schematic, cần sửa lại theo cách bạn đấu dây thật.
+- **Bit-timing CAN 1Mbit/s + việc dùng chung bus `CAN_INSTANCE_1` (RDK-link CAN FD + 6 động cơ chân trước CAN-FD) chưa đo trên phần cứng thật** - `lib/can.c` mới test loopback nội bộ (không qua đường truyền vật lý), chưa qua bus CAN thật - xem mục "CHƯA kiểm tra" trong `firmware/stm32h7/README.md` trước khi nối vào bus thật.
 - **GUI Tkinter** (`src/gui/`) - port nguyên xi từ `superDog/src/gui` (cùng cơ chế start/stop process, log panel, kill/shutdown), chỉ đổi hàng nút FSM: bỏ joystick di chuyển/nút Trot/biểu đồ cân bằng IMU của superDog (không áp dụng được - `stand_sit_controller/msg/Inputs` chỉ có field `command`, không có `lx/ly/rx/ry`, và babydog.xacro chưa bridge `/imu`), thay bằng 3 nút Đứng lên/Ngồi xuống/Estop khớp đúng `/control_input` của babyDog. Chạy `make gui`.

@@ -3,7 +3,7 @@
            type="controller::StandSitController"
            base_class_type="controller_interface::ControllerInterface">
         <description>
-            Stand up / sit down FSM controller (no gait, no active balance yet) + static gravity Tff (sim only, off by default).
+            Cartesian stand/sit controller using KDL FK/IK, with no gait or active balance yet.
         </description>
     </class>
 </library>

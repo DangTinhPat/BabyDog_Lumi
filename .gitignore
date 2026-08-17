@@ -35,3 +35,12 @@ firmware/stm32h7/microros/firmware/dev_ws/ament/
 Thumbs.db
 *.swp
 *~
+
+# Claude Code / Codex local configuration (machine-specific, not project source)
+.claude/
+.codex/
+.agents/
+AGENTS.md
+
+# Claude Code pre-compact snapshot (overwritten every run, session-specific, not project source)
+CONTEXT.md

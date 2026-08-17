@@ -4,9 +4,8 @@
 # description/babydog.xacro) and unitree_guide_controller's full gait/balance
 # stack is replaced by "controller" (stand up / sit down only, no walking, no
 # active balance - that all needs IMU feedback we don't have yet). "controller"
-# also has FK/IK (KDL, ported from unitree_guide_controller's RobotLeg/
-# QuadrupedRobot) used for static Tff (gravity feedforward) - see tau_ff_scale
-# below, off by default.
+# uses KDL FK/IK for Cartesian Stand/Sit. Its Jacobian path also supports
+# static Tff (gravity feedforward) - see tau_ff_scale below, off by default.
 #
 # 1000Hz base rate because leg_pd_controller runs its own control loop at up
 # to the controller_manager's rate and wants to be fast.
@@ -84,29 +83,20 @@ controller:
       - position
       - velocity
 
-    # Same devq stand/sit poses as superDog's UnitreeGuideController.h
-    # (hip = -arccos(H/2L), knee = 2*arccos(H/2L), L=0.15m): H=0.22m standing,
-    # H=0.10m sitting/crouched.
-    # DA TINH LAI (2026-08-14). hip/knee: cong thuc dich toa do new = old - home
-    # (home_hip=-1.238, home_knee=2.705, xem NOTE.md muc 2.8) - GIONG NHAU 4 chan vi
-    # hip/knee dung axis MIRROR theo tung chan (huong nguoc nhau), origin da hap thu
-    # het su khac biet do. abad: KHONG the dung chung 1 so cho 4 chan - ca 4 khop abad
-    # dung CUNG 1 axis="1 0 0" (KHONG mirror), chi co origin doi dau theo ben
-    # (phai=-0.36, trai=+0.36, xem babydog.xacro) - de dua ve thang dung (bu het goc
-    # home ±0.360, tranh "toet" nhu tu the nam xap luc dung), can gia tri NGUOC DAU
-    # theo ben: phai=+0.36, trai=-0.36 (q = -home). Da kiem tra nam trong <limit> tung
-    # ben (phai:[-0.774,1.494], trai:[-1.494,0.774]).
-    stand_pos:
-      [ 0.36, 0.49, -1.21,
-       -0.36, 0.49, -1.21,
-        0.36, 0.49, -1.21,
-       -0.36, 0.49, -1.21 ]
+    # Cartesian foot targets in body frame [FR xyz, FL xyz, RR xyz, RL xyz], m.
+    # FK captures the measured start pose; IK generates all joint angles online.
+    # z=-0.22 m is standing height, z=-0.10 m is sitting/crouched height.
+    stand_foot_positions:
+      [ 0.176, -0.1295, -0.22,
+        0.176,  0.1295, -0.22,
+       -0.176, -0.1295, -0.22,
+       -0.176,  0.1295, -0.22 ]
 
-    sit_pos:
-      [ 0.36, 0.007, -0.243,
-       -0.36, 0.007, -0.243,
-        0.36, 0.007, -0.243,
-       -0.36, 0.007, -0.243 ]
+    sit_foot_positions:
+      [ 0.176, -0.1295, -0.10,
+        0.176,  0.1295, -0.10,
+       -0.176, -0.1295, -0.10,
+       -0.176,  0.1295, -0.10 ]
 
     # Scaled down from Go1's kp=80/kd=3.5 in proportion to devq's much smaller
     # per-joint effort limit (9.1 N*m vs Go1's 23.7/35.55 N*m) - untested first

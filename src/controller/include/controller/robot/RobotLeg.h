@@ -1,8 +1,6 @@
 // Port tu superDog (/home/dvt/superDog/src/unitree_guide_controller/include/
-// unitree_guide_controller/robot/RobotLeg.h) - nguyen xi, chi doi include path
-// (unitree_guide_controller/ -> controller/). Lop 1 chan generic, dung KDL de
-// giai FK/IK/Jacobian tu 1 KDL::Chain (parse tu URDF) - khong dung ctrl_interfaces
-// nen khong co rui ro an toan nao, khong can sua gi khac.
+// unitree_guide_controller/robot/RobotLeg.h), extended with checked,
+// position-only IK and URDF joint-limit validation for babyDog.
 
 #ifndef ROBOTLEG_H
 #define ROBOTLEG_H
@@ -15,7 +13,9 @@
 
 class RobotLeg {
 public:
-    explicit RobotLeg(const KDL::Chain &chain);
+    RobotLeg(const KDL::Chain &chain,
+             const KDL::JntArray &q_min,
+             const KDL::JntArray &q_max);
 
     ~RobotLeg() = default;
 
@@ -26,6 +26,10 @@ public:
      */
     [[nodiscard]] KDL::Frame calcPEe2B(const KDL::JntArray &joint_positions) const;
 
+    /** Checked FK variant used by safety-sensitive state transitions. */
+    [[nodiscard]] bool calcPEe2B(const KDL::JntArray &joint_positions,
+                                 KDL::Frame &pose_out) const;
+
     /**
      * Use inverse kinematic to calculate the joint positions.
      * @param pEe target position of end effector
@@ -33,6 +37,15 @@ public:
      * @return target joint positions
      */
     [[nodiscard]] KDL::JntArray calcQ(const KDL::Frame &pEe, const KDL::JntArray &q_init) const;
+
+    /**
+     * Solve position-only IK and reject non-converged/non-finite/out-of-limit
+     * solutions. A quadruped leg has only three joints, so asking the solver
+     * to also match foot orientation would over-constrain the problem.
+     */
+    [[nodiscard]] bool calcQPosition(const KDL::Vector &target_position,
+                                     const KDL::JntArray &q_init,
+                                     KDL::JntArray &q_out) const;
 
     /**
      * Calculate the current jacobian matrix.
@@ -54,6 +67,8 @@ protected:
     std::shared_ptr<KDL::ChainFkSolverPos_recursive> fk_pose_solver_;
     std::shared_ptr<KDL::ChainJntToJacSolver> jac_solver_;
     std::shared_ptr<KDL::ChainIkSolverPos_LMA> ik_pose_solver_;
+    KDL::JntArray q_min_;
+    KDL::JntArray q_max_;
 };
 
 

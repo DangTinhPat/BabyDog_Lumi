@@ -32,7 +32,7 @@
 #define MOTOR_CALIB_H
 
 #include <stdint.h>
-#include "motor_protocol.h"
+#include "motor_topology.h"
 
 /* Toc do toi da ma hoa (dung chung 12 khop) - tu oneLeg/leg1_config.h
  * (LEG1_VMAX_RAW) VA tai lieu chinh thuc BabyAlpha2 (muc 3.2, vi du

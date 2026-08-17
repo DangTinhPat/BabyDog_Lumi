@@ -2,7 +2,7 @@
 
 #include "tick.h"
 #include "actuator_if.h"
-#include "motor_protocol.h"   /* JOINT_COUNT */
+#include "motor_topology.h"   /* JOINT_COUNT */
 #include "microros_transport.h"
 
 #include <rcl/rcl.h>
@@ -77,7 +77,7 @@ static bool CreateEntities(void)
         return false;
     }
     /* best_effort ca 2 chieu: mat 1 frame khong sao (frame sau bu, gui o nhip cao hon
-     * JOINT_LINK_TIMEOUT_MS nhieu lan) - tranh vong khu hoi ACK cua reliable lam giam
+     * timeout /joint_cmd nhieu lan) - tranh vong khu hoi ACK cua reliable lam giam
      * tan so thuc te, dung ly do da xac nhan qua IMU (xem OUT_SAVE/testSTM/README.md). */
     if (rclc_publisher_init_best_effort(
             &joint_fb_pub, &node,

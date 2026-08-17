@@ -1,4 +1,4 @@
-# Firmware STM32H7 - đứng lên / ngồi xuống
+# Firmware STM32H7 - relay lệnh khớp
 
 Board thật: **FANKE FK743M5-XIH6** (STM32H743XIH6, xem [`BOARD_FK743M5-XIH6.md`](BOARD_FK743M5-XIH6.md)). Dùng thư viện thanh ghi tự viết (không HAL/CMSIS) từ [`~/OUT_SAVE/babyDog_fwSTM/`](../../../OUT_SAVE/babyDog_fwSTM) - project firmware gốc, đã test một phần trên board thật (xem "Đã kiểm tra" bên dưới) - copy nguyên `lib/` + `startup_stm32h743xx.c` + `stm32h743xihx_flash.ld` vào đây, cộng thêm `app/` là code ứng dụng riêng cho giai đoạn đứng/ngồi này. `~/OUT_SAVE/babyDog_fwSTM/` vẫn giữ nguyên làm project tham khảo/hồi quy độc lập (main.c gốc có bài test loopback CAN qua 7 test case) - đã chuyển từ `~/babyDog_fwSTM/` sang `~/OUT_SAVE/` lúc dọn dẹp trước khi kết nối robot thật (xem OUT_SAVE/README nếu có).
 
@@ -14,23 +14,20 @@ lib/inc, lib/src/     Thư viện dùng chung (copy từ ~/OUT_SAVE/babyDog_fwST
                         usart, dma, cache, mem_attr, stm32h743_regs - còn lại, chưa dùng trong app này
 
 app/inc, app/src/     Code ứng dụng riêng cho giai đoạn đứng lên/ngồi xuống:
-                        protocol.h          Giao thức CAN FD với RDK X5 - PHẢI khớp
-                                            fdcan_bridge/protocol.py
-                        motor_protocol.h    Giao thức Classic CAN với 12 board driver khớp
+                        motor_topology.h    Giao thức CAN-FD với 12 board driver khớp
                                             (tự định nghĩa)
                         tick.h/.c           Bộ đếm mili-giây tự do (TIM2), thay lib/systick.h
                                             (blocking) cho vòng lặp chính không-chặn
-                        stand_sit_fsm.h/.c  FSM Passive/Stand/Sit - đối xứng stand_sit_controller (ROS2)
                         actuator_if.h/.c    Đóng gói lệnh vị trí/kp/kd + feedback cho 12 khớp qua CAN
 
 main.c                Vòng lặp chính, nối tất cả lại với nhau
 startup_stm32h743xx.c, stm32h743xihx_flash.ld   (copy từ ~/OUT_SAVE/babyDog_fwSTM/, không đổi)
 ```
 
-## Kiến trúc giao tiếp (theo yêu cầu)
+## Kiến trúc giao tiếp
 
-- **RDK X5 <-> STM32H7: CAN FD** (`CAN_INSTANCE_1`, PA11/PA12) - `protocol.h`, lệnh Stand/Sit/Estop, `fd_format=true` nhưng `bit_rate_switch=false` (dùng định dạng FD để có sẵn payload dài hơn cho tương lai, tốc độ vẫn 1 mức duy nhất để giảm rủi ro bring-up).
-- **STM32H7 <-> 12 board driver khớp: Classic CAN** (`fd_format=false`) - `motor_protocol.h`. Mỗi khớp có 1 board driver CAN riêng, tự làm PWM + đọc encoder 6 dây (2 dây nguồn động cơ + 4 dây encoder VCC/GND/A/B) tại chỗ, tự chạy **thuật toán PD cục bộ** (`pwm = kp*(target - đo_được) + kd*(0 - vận_tốc_đo_được)`) bằng kp/kd STM32H7 gửi xuống mỗi chu kỳ FSM. 6 khớp trên `CAN_INSTANCE_1` (cùng bus RDK-link, theo schematic board breakout: connector P1/P2/P3/P7/P9/P11), 6 khớp trên `CAN_INSTANCE_2` (PB5/PB6, connector P4/P5/P6/P8/P10/P12) - STM32H743 chỉ có 2 FDCAN, không có bus thứ 3, nên RDK-link chia sẻ bus với 6 động cơ chân trước (bình thường với CAN multi-drop, phân biệt bằng ID, không phải lỗi thiết kế).
+- **RDK X5/laptop <-> STM32H7: micro-ROS qua UART1** - `/joint_cmd` và `/joint_fb`. FSM/FK/IK chạy ở ROS2 controller; firmware không có tư thế Stand/Sit đặt sẵn.
+- **STM32H7 <-> 12 board driver khớp: CAN-FD** (`fd_format=false`) - `motor_topology.h`. Mỗi khớp có 1 board driver CAN riêng, tự làm PWM + đọc encoder 6 dây (2 dây nguồn động cơ + 4 dây encoder VCC/GND/A/B) tại chỗ, tự chạy **thuật toán PD cục bộ** (`pwm = kp*(target - đo_được) + kd*(0 - vận_tốc_đo_được)`) bằng kp/kd STM32H7 gửi xuống theo `/joint_cmd`. 6 khớp trên `CAN_INSTANCE_1` (connector P1/P2/P3/P7/P9/P11), 6 khớp trên `CAN_INSTANCE_2` (PB5/PB6, connector P4/P5/P6/P8/P10/P12).
 
 ## Build
 
@@ -55,22 +52,14 @@ Build sạch (không lỗi/warning ngoài các warning `_close`/`_read`/`_write`
 **CHƯA kiểm tra:**
 - Bit-timing FDCAN 1Mbit/s (tính từ HSE 25MHz, xem công thức trong `main.c`) qua bus CAN thật + transceiver + board driver khớp - `can.c` mới test loopback nội bộ (không qua đường truyền vật lý nên không phản ánh đúng tốc độ thật). **Bắt buộc đo bằng dao động ký/logic analyzer trên CANH/CANL** trước khi nối vào bus có board động cơ khác.
 - `CAN_INSTANCE_2` (FDCAN2) - `lib/can.c` mới test `CAN_INSTANCE_1`.
-- **Giao thức CAN với board driver động cơ (`motor_protocol.h`) là TỰ ĐỊNH NGHĨA** (chưa có giao thức có sẵn từ board driver, theo xác nhận) - board driver mỗi khớp (bạn tự làm/đang làm) PHẢI cài đặt encode/decode khớp y hệt, hoặc sửa `motor_protocol.h` + `actuator_if.c` cho khớp với thứ board driver thật sự nói.
+- **Giao thức CAN với board driver động cơ (`motor_topology.h`) là TỰ ĐỊNH NGHĨA** (chưa có giao thức có sẵn từ board driver, theo xác nhận) - board driver mỗi khớp (bạn tự làm/đang làm) PHẢI cài đặt encode/decode khớp y hệt, hoặc sửa `motor_topology.h` + `actuator_if.c` cho khớp với thứ board driver thật sự nói.
 - Chưa test vòng lặp đầy đủ RDK X5 -> STM32 -> board driver khớp -> động cơ thật, vì chưa có board driver khớp thật để nối vào.
 - Điện trở kết cuối CAN 120Ω - chưa thấy rõ trên schematic board breakout động cơ (chỉ có R1/R2/R7/R8 10Ω, giống lọc EMI hơn là kết cuối chuẩn) - kiểm tra khi bring-up thật.
-- Mapping khớp -> connector (`Motor_BusForJoint()` trong `motor_protocol.h`) là giả định theo schematic - sửa lại nếu bạn đấu dây thật khác.
+- Mapping khớp -> connector (`Motor_BusForJoint()` trong `motor_topology.h`) là giả định theo schematic - sửa lại nếu bạn đấu dây thật khác.
 
-## Giao thức CAN
+## Giao thức với board driver mỗi khớp - CAN-FD
 
-### Với RDK X5 - CAN FD (tóm tắt, xem `protocol.h`)
-
-- `CMD_CAN_ID` (0x100), RDK X5 -> STM32, ~20Hz: `command` (0/1/2/9 = None/Stand/Sit/Estop) + `seq`.
-- `STATUS_CAN_ID` (0x101), STM32 -> RDK X5, ~20Hz: `fsm_state` + `settled` + `fault_flags` + `last_seq`.
-- Mất kết nối > `LINK_TIMEOUT_MS` (500ms) không nhận CMD frame nào -> firmware tự ESTOP (ngắt lực).
-
-### Với board driver mỗi khớp - Classic CAN (tóm tắt, xem `motor_protocol.h`)
-
-- `MOTOR_CMD_BASE_ID + joint` (0x200-0x20B), STM32 -> board driver, mỗi khi `FSM_Update()` tính lại nội suy: `target_angle_mrad` (int16, rad×1000) + `kp_x100`/`kd_x100` (uint16) + `seq`.
+- `MOTOR_CMD_BASE_ID + joint` (0x200-0x20B), STM32 -> board driver, mỗi khi nhận `/joint_cmd`: `target_angle_mrad` (int16, rad×1000) + `kp_x100`/`kd_x100` (uint16) + `seq`.
 - `MOTOR_FB_BASE_ID + joint` (0x210-0x21B), board driver -> STM32: `measured_angle_mrad` + `measured_velocity_mrad_s` (int16) + `fault_flags` + `last_seq`. STM32 dùng vị trí đo được này làm điểm bắt đầu nội suy lần chuyển trạng thái tiếp theo (`Actuator_GetLastTarget()`).
 
 ## SystemClock

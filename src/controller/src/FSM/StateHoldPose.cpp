@@ -7,7 +7,7 @@
 StateHoldPose::StateHoldPose(CtrlInterfaces& ctrl_interfaces,
                               const FSMStateName state_name,
                               const std::string& state_name_string,
-                              const std::vector<double>& target_pos,
+                              const std::vector<double>& target_foot_positions,
                               const double kp,
                               const double kd,
                               const double duration_seconds,
@@ -19,10 +19,59 @@ StateHoldPose::StateHoldPose(CtrlInterfaces& ctrl_interfaces,
       robot_model_(robot_model), tau_ff_scale_(tau_ff_scale), tau_ff_max_nm_(tau_ff_max_nm)
 {
     duration_ = ctrl_interfaces_.frequency_ * duration_seconds;
-    for (int i = 0; i < 12; i++)
+    target_foot_positions_.resize(4);
+    for (int leg = 0; leg < 4; ++leg)
     {
-        target_pos_[i] = target_pos[i];
+        target_foot_positions_[leg] = KDL::Vector(
+            target_foot_positions[leg * 3],
+            target_foot_positions[leg * 3 + 1],
+            target_foot_positions[leg * 3 + 2]);
     }
+}
+
+bool StateHoldPose::initializeCartesianMotion(const std::shared_ptr<QuadrupedRobot>& robot_model)
+{
+    if (!robot_model || ctrl_interfaces_.joint_position_state_interface_.size() != 12)
+    {
+        return false;
+    }
+
+    std::vector<KDL::JntArray> measured_q(4, KDL::JntArray(3));
+    for (int leg = 0; leg < 4; ++leg)
+    {
+        for (int joint = 0; joint < 3; ++joint)
+        {
+            const auto value = ctrl_interfaces_.joint_position_state_interface_[leg * 3 + joint]
+                                   .get().get_optional();
+            if (!value || !std::isfinite(*value))
+            {
+                return false;
+            }
+            measured_q[leg](joint) = *value;
+        }
+    }
+
+    // Use the exact same coherent encoder snapshot for FK and as the first IK
+    // seed. This avoids a stale/model-cache read at a state transition.
+    const auto measured_feet = robot_model->getFeet2BPositions(measured_q);
+    if (measured_feet.size() != 4)
+    {
+        return false;
+    }
+    start_foot_positions_.resize(4);
+    for (int leg = 0; leg < 4; ++leg)
+    {
+        start_foot_positions_[leg] = measured_feet[leg].p;
+    }
+
+    // Do not solve the final target in one jump here. The home configuration
+    // is close to a straight-leg singularity, where a one-shot iterative IK
+    // can choose the mirrored (out-of-limit) knee branch. run() follows small
+    // Cartesian increments and validates convergence + limits before every
+    // command, which reliably stays on the measured branch.
+    ik_seed_ = std::move(measured_q);
+    motion_ready_ = true;
+    return true;
 }
 
 void StateHoldPose::enter()
@@ -46,14 +95,6 @@ void StateHoldPose::enter()
         return;
     }
 
-    // get_optional() co the tra ve rong (vd chua co feedback thuc nao tung toi -
-    // dung khi test khong co dong co that cam) - .value() thang tay se nem
-    // std::bad_optional_access. Fallback ve target_pos_[i] (diem den cua chinh state
-    // nay) khi chua co gia tri do duoc - an toan hon la crash.
-    for (int i = 0; i < 12; i++)
-    {
-        start_pos_[i] = ctrl_interfaces_.joint_position_state_interface_[i].get().get_optional().value_or(target_pos_[i]);
-    }
     ctrl_interfaces_.control_inputs_.command = 0;
     // controllers_real.yaml (robot that) chi khai command_interfaces: [position, kp, kd]
     // - khac sim (controllers.yaml, co them velocity, chuyen tiep qua leg_pd_controller
@@ -67,9 +108,13 @@ void StateHoldPose::enter()
     // ca velocity).
     const bool has_velocity = ctrl_interfaces_.joint_velocity_command_interface_.size() == 12;
     const bool has_torque = ctrl_interfaces_.joint_torque_command_interface_.size() == 12;
+    bool all_feedback_valid = true;
     for (int i = 0; i < 12; i++)
     {
-        std::ignore = ctrl_interfaces_.joint_position_command_interface_[i].get().set_value(start_pos_[i]);
+        const auto feedback = ctrl_interfaces_.joint_position_state_interface_[i].get().get_optional();
+        all_feedback_valid = all_feedback_valid && feedback && std::isfinite(*feedback);
+        std::ignore = ctrl_interfaces_.joint_position_command_interface_[i].get().set_value(
+            feedback.value_or(0.0));
         if (has_velocity)
         {
             std::ignore = ctrl_interfaces_.joint_velocity_command_interface_[i].get().set_value(0.0);
@@ -78,21 +123,84 @@ void StateHoldPose::enter()
         {
             std::ignore = ctrl_interfaces_.joint_torque_command_interface_[i].get().set_value(0.0);
         }
-        std::ignore = ctrl_interfaces_.joint_kp_command_interface_[i].get().set_value(kp_);
+        // Keep position actuation disabled until feedback and FK are valid.
+        // Every IK command is validated separately in run().
+        std::ignore = ctrl_interfaces_.joint_kp_command_interface_[i].get().set_value(0.0);
         std::ignore = ctrl_interfaces_.joint_kd_command_interface_[i].get().set_value(kd_);
     }
     percent_ = 0;
+    motion_ready_ = false;
+    ik_error_reported_ = false;
+
+    const auto robot_model_snapshot = std::atomic_load(&robot_model_);
+    if (all_feedback_valid && initializeCartesianMotion(robot_model_snapshot))
+    {
+        for (int i = 0; i < 12; ++i)
+        {
+            std::ignore = ctrl_interfaces_.joint_kp_command_interface_[i].get().set_value(kp_);
+        }
+    }
 }
 
 void StateHoldPose::run(const rclcpp::Time& /*time*/, const rclcpp::Duration& /*period*/)
 {
-    percent_ += 1 / duration_;
-    const double phase = std::tanh(percent_);
-    for (int i = 0; i < 12; i++)
+    const auto robot_model_snapshot = std::atomic_load(&robot_model_);
+    if (!motion_ready_)
     {
-        std::ignore = ctrl_interfaces_.joint_position_command_interface_[i].get().set_value(
-            phase * target_pos_[i] + (1 - phase) * start_pos_[i]);
+        if (!initializeCartesianMotion(robot_model_snapshot))
+        {
+            return;
+        }
+        for (int i = 0; i < 12; ++i)
+        {
+            std::ignore = ctrl_interfaces_.joint_kp_command_interface_[i].get().set_value(kp_);
+        }
     }
+
+    const double next_percent = percent_ + 1.0 / duration_;
+    const double phase = std::tanh(next_percent);
+    std::vector<KDL::Vector> desired_feet(4);
+    for (int leg = 0; leg < 4; ++leg)
+    {
+        desired_feet[leg] = (1.0 - phase) * start_foot_positions_[leg] +
+                            phase * target_foot_positions_[leg];
+    }
+
+    std::vector<KDL::JntArray> q_command;
+    int failed_leg = -1;
+    if (!robot_model_snapshot ||
+        !robot_model_snapshot->solveFootIK(desired_feet, ik_seed_, q_command, &failed_leg))
+    {
+        if (!ik_error_reported_)
+        {
+            fprintf(stderr,
+                    "StateHoldPose::run(): IK chan %d khong hoi tu/vi pham joint limit; "
+                    "giu lenh hop le gan nhat, khong tang pha.\n", failed_leg);
+            if (failed_leg >= 0 && failed_leg < 4)
+            {
+                fprintf(stderr,
+                        "  seed q=[%.9f %.9f %.9f], start foot=[%.9f %.9f %.9f], "
+                        "desired foot=[%.9f %.9f %.9f]\n",
+                        ik_seed_[failed_leg](0), ik_seed_[failed_leg](1), ik_seed_[failed_leg](2),
+                        start_foot_positions_[failed_leg].x(), start_foot_positions_[failed_leg].y(),
+                        start_foot_positions_[failed_leg].z(), desired_feet[failed_leg].x(),
+                        desired_feet[failed_leg].y(), desired_feet[failed_leg].z());
+            }
+            ik_error_reported_ = true;
+        }
+        return;
+    }
+
+    for (int leg = 0; leg < 4; ++leg)
+    {
+        for (int joint = 0; joint < 3; ++joint)
+        {
+            std::ignore = ctrl_interfaces_.joint_position_command_interface_[leg * 3 + joint]
+                              .get().set_value(q_command[leg](joint));
+        }
+    }
+    ik_seed_ = std::move(q_command);
+    percent_ = next_percent;
 
     // Tff (bu trong luc tinh) - AN TOAN MAC DINH TAT (tau_ff_scale_=0.0, xem
     // StandSitController.h). Chi tinh/ghi khi:
@@ -115,7 +223,7 @@ void StateHoldPose::run(const rclcpp::Time& /*time*/, const rclcpp::Duration& /*
         // vien cua StandSitController, bi doc/ghi dong thoi tu 2 luong khac nhau).
         // Chup 1 ban snapshot on dinh 1 lan, dung xuyen suot khoi if nay - tranh truong
         // hop robot_model_ bi gan lai (con tro moi) giua chung cac lan doc rieng le.
-        if (const auto robot_model_snapshot = std::atomic_load(&robot_model_); robot_model_snapshot && percent_ >= 1.5)
+        if (robot_model_snapshot && percent_ >= 1.5)
         {
             // Gia dinh tinh, can bang, chia deu 4 chan (chua co IMU nen khong biet
             // nghieng/lech tam) - F huong +Z trong frame goc KDL chain (tai
@@ -157,6 +265,7 @@ void StateHoldPose::run(const rclcpp::Time& /*time*/, const rclcpp::Duration& /*
 void StateHoldPose::exit()
 {
     percent_ = 0;
+    motion_ready_ = false;
 }
 
 FSMStateName StateHoldPose::checkChange()

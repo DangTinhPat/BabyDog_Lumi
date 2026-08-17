@@ -2,17 +2,17 @@
 #define CONTROLLER_STATEHOLDPOSE_H
 
 #include "FSMState.h"
+#include <kdl/frames.hpp>
+#include <kdl/jntarray.hpp>
 #include <memory>
+#include <vector>
 
 class QuadrupedRobot;
 
-// Smoothly interpolates every joint (tanh ramp, same shape as superDog's
-// BaseFixedStand/StateFixedDown) from wherever it currently is to a fixed
-// target pose, then holds it there with ordinary joint-space PD. Used for
-// both STAND (target_pos = stand_pos) and SIT (target_pos = sit_pos) - no
-// separate base/derived pair needed since neither pose does the active
-// IMU-driven balance superDog's BaseFixedStand does once settled (we have no
-// IMU yet, see main_bot/description/babydog.xacro).
+// Cartesian stand/sit motion: FK captures the four measured foot positions on
+// entry, the controller interpolates those positions in the body frame, and
+// position-only IK produces 12 joint commands every update. Joint-space PD is
+// still the low-level actuator control law.
 //
 // ESTOP can interrupt mid-interpolation (checked every cycle, immediately);
 // switching between STAND and SIT only takes effect once the current
@@ -30,7 +30,7 @@ public:
     StateHoldPose(CtrlInterfaces& ctrl_interfaces,
                   FSMStateName state_name,
                   const std::string& state_name_string,
-                  const std::vector<double>& target_pos,
+                  const std::vector<double>& target_foot_positions,
                   double kp,
                   double kd,
                   double duration_seconds,
@@ -48,8 +48,13 @@ public:
     FSMStateName checkChange() override;
 
 private:
-    double target_pos_[12] = {};
-    double start_pos_[12] = {};
+    bool initializeCartesianMotion(const std::shared_ptr<QuadrupedRobot>& robot_model);
+
+    std::vector<KDL::Vector> target_foot_positions_;
+    std::vector<KDL::Vector> start_foot_positions_;
+    std::vector<KDL::JntArray> ik_seed_;
+    bool motion_ready_ = false;
+    bool ik_error_reported_ = false;
 
     double kp_, kd_;
 
