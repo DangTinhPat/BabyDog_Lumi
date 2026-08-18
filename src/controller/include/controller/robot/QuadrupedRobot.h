@@ -93,6 +93,15 @@ public:
      */
     [[nodiscard]] std::vector<KDL::Vector> getFeet2BVelocities() const;
 
+    /**
+     * Clamp one leg's joint solution to its URDF limits in place - for use
+     * after applying a manual per-joint trim on top of an already-validated
+     * IK solution (solveFootIK only validates its own raw output).
+     * @param index leg index
+     * @return true if any element was out of range and got clamped.
+     */
+    [[nodiscard]] bool clampLegToLimits(int index, KDL::JntArray &q) const;
+
     double mass_ = 0;
     Vec34 feet_pos_normal_stand_;
     std::vector<KDL::JntArray> current_joint_pos_;

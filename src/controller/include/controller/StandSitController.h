@@ -20,9 +20,9 @@ namespace controller
     };
 
     // Trimmed fork of superDog's UnitreeGuideController: only Passive/Stand/Sit
-    // (no gait, no WaveGenerator/Estimator/BalanceCtrl QP - all of that needs
-    // real IMU feedback we don't have yet). See main_bot/description/babydog.xacro
-    // for the "no IMU yet" note.
+    // (no gait, no WaveGenerator/Estimator/BalanceCtrl QP). Filtered sensing is
+    // available on /imu/data, but active IMU correction is intentionally not
+    // part of this Stand/Sit controller yet.
     class StandSitController final : public controller_interface::ControllerInterface
     {
     public:
@@ -78,10 +78,18 @@ namespace controller
             -0.176,  0.1295, -0.10
         };
 
-        double stand_kp_ = 30.0;
-        double stand_kd_ = 1.5;
-        double sit_kp_ = 30.0;
-        double sit_kd_ = 1.5;
+        // Per-joint gains, same ordering as joint_names_ (FR/FL/RR/RL,
+        // abad/hip/knee). Defaults preserve the previous common values while
+        // allowing each actuator to be tuned independently.
+        std::vector<double> stand_kp_ = std::vector<double>(12, 30.0);
+        std::vector<double> stand_kd_ = std::vector<double>(12, 1.5);
+        std::vector<double> sit_kp_ = std::vector<double>(12, 30.0);
+        std::vector<double> sit_kd_ = std::vector<double>(12, 1.5);
+
+        // Tran v_des tung khop. Gia tri thuc duoc StateHoldPose tinh tu hai
+        // nghiem IK lien tiep / period; day chi la lop chan EC truoc khi gui
+        // qua int16 mrad/s. Firmware con kep lai doc lap lan cuoi.
+        std::vector<double> velocity_max_rad_s_ = std::vector<double>(12, 5.0);
 
         // Thoi gian noi suy tanh (giay) cua vi tri ban chan Cartesian -
         // rieng cho tung chieu vi sit thuong can cham hon stand de do soc co khi (xem
@@ -104,14 +112,32 @@ namespace controller
             "front_right_foot", "front_left_foot", "hind_right_foot", "hind_left_foot"
         };
 
-        // Tff (bu trong luc tinh, xem StateHoldPose::run()) - AN TOAN MAC DINH TAT
-        // (tau_ff_scale_=0.0). Da co bai hoc that tu oneLeg (du an tham khao khac):
-        // tau_ff vot lo luc 7-14 lan khi chua kiem chung du dieu kien. Bat dan qua
-        // YAML (controllers.yaml/controllers_real.yaml) SAU KHI xac nhan dau/do lon
-        // hop ly tren sim - xem plan. tau_ff_max_nm_ la tran tuyet doi Nm/khop, kep
-        // SAU khi nhan tau_ff_scale_, khong phu thuoc scale co dung hay khong.
+        // Tff = -J(q)^T * F_support tren EC (xem StateHoldPose::run()). Khong co
+        // IMU/contact estimator trong Phase 1, nen day la bu tai TINH: Stand tang
+        // dan support_blend, Sit giam ve 0; 4 load_share phai co tong bang 1.
+        // tau_ff_scale_ la master gain; tau_ff_mass_kg_ > 0 override khoi luong
+        // URDF chi cho tinh Tff (de tune robot that ma khong sua inertial model);
+        // tau_ff_max_nm_ van kep rieng 12 khop sau khi nhan scale. Gia tri robot
+        // that duoc tune trong controllers_real.yaml sau khi baseline
+        // tau_ff_scale=0 xac nhan dau -J^T*F; sim dung 1.0.
         double tau_ff_scale_ = 0.0;
-        double tau_ff_max_nm_ = 2.0;
+        double tau_ff_mass_kg_ = 0.0;
+        double tau_ff_ramp_seconds_ = 1.0;
+        std::vector<double> tau_ff_load_share_ = std::vector<double>(4, 0.25);
+        std::vector<double> tau_ff_joint_scale_ = std::vector<double>(12, 1.0);
+        // No fast error-based Tff correction in the control loop: real tests showed that
+        // cutting/releasing feedforward from joint error can pump the body and
+        // increase bouncing. Instead, keep Tff static and print settled
+        // diagnostics for slow offline tuning of tau_ff_joint_scale/load_share.
+        bool tau_ff_diagnostics_enabled_ = true;
+        double tau_ff_diagnostics_start_seconds_ = 2.0;
+        double tau_ff_diagnostics_period_seconds_ = 1.0;
+        std::vector<double> stand_joint_trim_rad_ = std::vector<double>(12, 0.0);
+        std::vector<double> sit_joint_trim_rad_ = std::vector<double>(12, 0.0);
+        // Trang thai ramp dung chung giua State Stand va Sit: nhu vay Stand->Sit
+        // ha Tff mem thay vi cat torque dot ngot o bien FSM. Passive/ESTOP reset 0.
+        double tau_ff_support_blend_ = 0.0;
+        std::vector<double> tau_ff_max_nm_ = std::vector<double>(12, 10.0);
 
         std::unordered_map<
             std::string, std::vector<std::reference_wrapper<hardware_interface::LoanedCommandInterface> >*>

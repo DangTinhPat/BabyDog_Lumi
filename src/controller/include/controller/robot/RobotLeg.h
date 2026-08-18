@@ -48,6 +48,15 @@ public:
                                      KDL::JntArray &q_out) const;
 
     /**
+     * Clamp a full-leg joint solution to this leg's URDF limits in place -
+     * for values derived from an already-validated IK solution (e.g. with a
+     * manual per-joint trim added on top), not a substitute for calcQPosition's
+     * own limit check on the raw solver output.
+     * @return true if any element was out of range and got clamped.
+     */
+    bool clampToLimits(KDL::JntArray &q) const;
+
+    /**
      * Calculate the current jacobian matrix.
      * @param joint_positions Leg joint positions
      * @return jacobian matrix

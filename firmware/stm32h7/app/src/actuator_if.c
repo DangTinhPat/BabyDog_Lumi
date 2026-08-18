@@ -75,6 +75,24 @@ static float RawToLogical(JointIndex_t joint, float raw_rad)
     return (float)sign * raw_rad + g_home_offset_rad[joint];
 }
 
+/* Torque khong co offset: chi doi dau theo cung mapping lap guong cua goc.
+ * Neu lenh vi tri logic duong can torque logic duong de ho tro no, ca hai
+ * phai toi motor voi cung phep doi dau. */
+static float LogicalTorqueToRaw(JointIndex_t joint, float logical_nm)
+{
+    const int sign = MOTOR_JOINT_SIGN[Motor_LegGroupForJoint(joint)][Motor_JointTypeForJoint(joint)];
+    return (float)sign * logical_nm;
+}
+
+/* Velocity la dao ham cua position: cung doi dau lap guong, khong bao gio
+ * cong home offset. Tach ham de khong vo tinh dung LogicalToRaw() (ham do co
+ * offset vi tri) cho v_des. */
+static float LogicalVelocityToRaw(JointIndex_t joint, float logical_rad_s)
+{
+    const int sign = MOTOR_JOINT_SIGN[Motor_LegGroupForJoint(joint)][Motor_JointTypeForJoint(joint)];
+    return (float)sign * logical_rad_s;
+}
+
 static bool can_tx(uint32_t instance, const CAN_Frame *f)
 {
     for (uint32_t i = 0U; i < 200U; i++)
@@ -183,7 +201,8 @@ static bool read_home_logical(JointIndex_t joint, float *logical_rad)
     const uint32_t id = Motor_IdForJoint(joint);
     for (uint32_t a = 0U; a < 20U; a++)
     {
-        const CAN_Frame probe = BA2_BuildPdFrame(id, 0.0f, 0.0f, 0.0f, 0.0f, MOTOR_TAU_ABS_LIMIT_NM);
+        const CAN_Frame probe = BA2_BuildPdFrame(
+            id, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, MOTOR_TAU_ABS_LIMIT_NM);
         (void)can_tx(instance, &probe);
         const uint32_t t0 = Tick_GetMs();
         while ((Tick_GetMs() - t0) < 20U)
@@ -330,17 +349,14 @@ void Actuator_OnBabyAlpha2Frame(uint32_t instance, const CAN_Frame *frame)
     g_has_feedback[slot] = 1;
 }
 
-void Actuator_SetTarget(const float angles_rad[12], float kp, float kd)
+void Actuator_SetTarget(const float angles_rad[12], const float velocities_rad_s[12],
+                        const float kp[12],
+                        const float kd[12], const float tau_ff_nm[12])
 {
-    /* Kep KP/KD LOP 2 - doc lap voi phia ROS2/EC (khong ep tran o do, xem
+    /* Kep velocity/KP/KD/Tff LOP 2 - doc lap voi phia ROS2/EC (xem
      * StandSitController.h). BA2_EncodeGainX100() chi kep san = 0, chua co
      * tran - kep o day truoc, phong gia tri loi (YAML sai don vi, hoac
      * kp_x100/kd_x100 tu /joint_cmd bi loi) truyen thang xuong dong co that. */
-    if (kp < 0.0f) { kp = 0.0f; }
-    if (kp > MOTOR_KP_ABS_LIMIT) { kp = MOTOR_KP_ABS_LIMIT; }
-    if (kd < 0.0f) { kd = 0.0f; }
-    if (kd > MOTOR_KD_ABS_LIMIT) { kd = MOTOR_KD_ABS_LIMIT; }
-
     for (int j = 0; j < (int)JOINT_COUNT; j++)
     {
         /* Khop hieu chuan that bai luc Actuator_Init() -> KHONG gui lenh gi
@@ -348,21 +364,50 @@ void Actuator_SetTarget(const float angles_rad[12], float kp, float kd)
         if (!g_joint_ok[j]) { continue; }
         const JointIndex_t joint = (JointIndex_t)j;
 
+        float joint_kp = kp[j];
+        float joint_kd = kd[j];
+        float joint_velocity = velocities_rad_s[j];
+        float joint_tau_ff = tau_ff_nm[j];
+        if (joint_velocity > MOTOR_VELOCITY_ABS_LIMIT_RAD_S[j])
+        {
+            joint_velocity = MOTOR_VELOCITY_ABS_LIMIT_RAD_S[j];
+        }
+        if (joint_velocity < -MOTOR_VELOCITY_ABS_LIMIT_RAD_S[j])
+        {
+            joint_velocity = -MOTOR_VELOCITY_ABS_LIMIT_RAD_S[j];
+        }
+        if (joint_kp < 0.0f) { joint_kp = 0.0f; }
+        if (joint_kp > MOTOR_KP_ABS_LIMIT) { joint_kp = MOTOR_KP_ABS_LIMIT; }
+        if (joint_kd < 0.0f) { joint_kd = 0.0f; }
+        if (joint_kd > MOTOR_KD_ABS_LIMIT) { joint_kd = MOTOR_KD_ABS_LIMIT; }
+        if (joint_tau_ff > MOTOR_TAU_ABS_LIMIT_NM) { joint_tau_ff = MOTOR_TAU_ABS_LIMIT_NM; }
+        if (joint_tau_ff < -MOTOR_TAU_ABS_LIMIT_NM) { joint_tau_ff = -MOTOR_TAU_ABS_LIMIT_NM; }
+
         /* Kep gioi han hanh trinh LOP 2 TRONG KHONG GIAN LOGIC - doc lap voi
          * SETUP_LIMITS da gui driver (oneLeg/HW.md muc 8, 2 lop bao ve
          * nhau). */
         float target_logical = angles_rad[j];
         if (target_logical > g_limit_max_rad[j]) { target_logical = g_limit_max_rad[j]; }
         if (target_logical < g_limit_min_rad[j]) { target_logical = g_limit_min_rad[j]; }
+        /* Neu target dang o bien, khong cho D-term tiep tuc yeu cau van toc
+         * huong RA NGOAI hanh trinh. Van toc huong vao trong van duoc giu de
+         * khop co the roi khoi bien mot cach binh thuong. */
+        if ((target_logical >= g_limit_max_rad[j] && joint_velocity > 0.0f) ||
+            (target_logical <= g_limit_min_rad[j] && joint_velocity < 0.0f))
+        {
+            joint_velocity = 0.0f;
+        }
         g_last_target[j] = target_logical;
 
-        /* Chuyen sang khong gian RAW (dao dau neu MOTOR_JOINT_SIGN=-1 cho
-         * chan nay) NGAY TRUOC KHI ma hoa gui di - day la diem DUY NHAT
-         * dong co "nhin thay" gia tri raw. tau_ff luon 0.0f - KHONG dung
-         * (xem motor_calib.h/plan "KHONG ke thua lan nay"). */
+        /* Chuyen position/velocity/torque sang khong gian RAW NGAY TRUOC KHI
+         * ma hoa. Position co home offset; velocity va torque chi doi dau,
+         * tuyet doi khong duoc cong offset goc vao hai dai luong dao ham. */
         const float target_raw = LogicalToRaw(joint, target_logical);
+        const float velocity_raw = LogicalVelocityToRaw(joint, joint_velocity);
+        const float tau_ff_raw = LogicalTorqueToRaw(joint, joint_tau_ff);
         const CAN_Frame frame = BA2_BuildPdFrame(
-            Motor_IdForJoint(joint), target_raw, kp, kd, 0.0f, MOTOR_TAU_ABS_LIMIT_NM);
+            Motor_IdForJoint(joint), target_raw, velocity_raw, joint_kp, joint_kd,
+            tau_ff_raw, MOTOR_TAU_ABS_LIMIT_NM);
         (void)CAN_Transmit(Motor_BusForJoint(joint), &frame);
     }
 }
@@ -373,8 +418,19 @@ void Actuator_Disable(void)
      * phía ROS2: kp=0, kd=1.0) - target góc không còn ý nghĩa khi kp=0, dùng
      * lại vị trí đo được gần nhất cho gọn. */
     float target[JOINT_COUNT];
+    float velocity[JOINT_COUNT];
+    float kp[JOINT_COUNT];
+    float kd[JOINT_COUNT];
+    float tau_ff[JOINT_COUNT];
     Actuator_GetLastTarget(target);
-    Actuator_SetTarget(target, 0.0f, 1.0f);
+    for (int j = 0; j < (int)JOINT_COUNT; ++j)
+    {
+        velocity[j] = 0.0f;
+        kp[j] = 0.0f;
+        kd[j] = 1.0f;
+        tau_ff[j] = 0.0f;
+    }
+    Actuator_SetTarget(target, velocity, kp, kd, tau_ff);
 }
 
 void Actuator_GetLastTarget(float angles_rad[12])

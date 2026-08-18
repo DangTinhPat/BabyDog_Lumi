@@ -3,7 +3,7 @@
 <package format="3">
     <name>main_bot_hardware</name>
     <version>0.0.0</version>
-    <description>ros2_control hardware_interface::SystemInterface for the real babyDog robot - relays position/kp/kd to firmware/stm32h7 over micro-ROS/UART ("/joint_cmd"/"/joint_fb", main_bot_hardware_msgs, via micro_ros_agent), so stand_sit_controller can drive real hardware directly (command_prefix: "") the same way it drives Gazebo via leg_pd_controller.</description>
+    <description>ros2_control hardware interface for real babyDog: relays independent position/velocity/Kp/Kd/Tff commands for 12 joints to STM32H7 over micro-ROS/UART.</description>
     <maintainer email="dangtinh.ftcpy@gmail.com">dvt</maintainer>
     <license>Apache-2.0</license>
 

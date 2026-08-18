@@ -142,6 +142,31 @@ must shift by the same amount (`new = old − home`) since they don't move autom
 
 ---
 
+### 2.7. Tff sign must be selected from a zero-feedforward baseline
+
+- **Symptom**: at real scale `0.70`, the robot tiptoed/folded its hips, hummed and oscillated;
+  synchronized `/joint_cmd` + `/joint_fb` showed Tff opposite the instantaneous P term on all 12
+  joints.
+- **Debugging trap**: comparing Tff against `Kp*(q_des-q_measured)` while Tff is already active does
+  **not** identify the correct feedforward sign. The closed-loop P term moves to oppose an injected
+  feedforward torque, even when that feedforward uses the correct convention. This false criterion
+  briefly led to changing `kTffSign` from `-1` to `+1`; a scale-`0.10` capture again showed Tff
+  opposite P on 12/12 joints, falsifying the criterion rather than validating the sign flip.
+- **Decisive test**: set real `tau_ff_scale=0`, keep the same target and Kp/Kd, capture a settled
+  Stand sample, then evaluate the controller's KDL Jacobian at those exact measured angles. The
+  zero-Tff PD baseline matched `-J(q)^T F_support` on **11/12 joints** and `+J(q)^T F_support` on
+  only **1/12**; `dot(PD,-J^T F)=+28.74` versus `dot(PD,+J^T F)=-28.74`. The lone FR-hip exception
+  had only `|J^T F|=0.020 N.m`, near that joint's sign crossing and too small to select a convention.
+- **Fix/current convention**: `RobotLeg::calcTorque()` remains the generic `+J^T F`; only
+  `StateHoldPose` applies `kTffSign=-1`. Firmware must not compensate again: position and Tff both
+  use the same `MOTOR_JOINT_SIGN` when converting LOGIC to RAW. Real scale restarts conservatively
+  at `0.10`; do not return directly to `0.70`.
+- **Post-fix real verification**: with `kTffSign=-1`, scale `0.10`, and a settled 502-sample window
+  (`v_des=0` on all 12 joints), Tff aligned with the zero-Tff load baseline on 12/12 joints. Absolute
+  target error decreased on 10/12 joints and aggregate joint-PD magnitude (`sum(abs(P+D))`) dropped
+  from `19.07` to `9.72 N.m`. The two error exceptions were the front hip joints; keep scale at
+  `0.10` until their load/pose behavior is characterized instead of increasing the global scale.
+
 ## 3. Known open issues
 
 ### 3.1. No CAN bus-off runtime monitoring

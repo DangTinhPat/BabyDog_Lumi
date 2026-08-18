@@ -66,6 +66,7 @@ def generate_launch_description():
         [pkg_main_bot, 'description', 'robot.urdf.xacro']
     )
     controllers_yaml = os.path.join(pkg_main_bot, 'config', 'controllers_real.yaml')
+    imu_filter_yaml = os.path.join(pkg_main_bot, 'config', 'imu_filter.yaml')
     # File RIENG cho robot that (khong dung chung babydog.rviz voi sim) - CHI Grid + TF
     # display, KHONG co RobotModel (khong can load URDF/mesh trong rviz de xem TF -
     # RobotModel's "Description Topic" trong babydog.rviz con bi mismatch QoS
@@ -118,6 +119,18 @@ def generate_launch_description():
         executable='micro_ros_agent',
         output='screen',
         arguments=['serial', '--dev', serial_dev, '-b', serial_baud],
+    )
+
+    imu_filter = Node(
+        package='imu_kalman_filter',
+        executable='imu_kalman_node',
+        name='imu_kalman_filter',
+        output='screen',
+        parameters=[imu_filter_yaml, {
+            'input_source': 'compact',
+            'compact_topic': '/imu/raw',
+            'use_sim_time': False,
+        }],
     )
 
     # use_sim_time=False TUONG MINH (khac sim.launch.py) - khong co /clock topic nao
@@ -181,6 +194,7 @@ def generate_launch_description():
         declare_rviz,
         *unset_snap_vars,
         micro_ros_agent,
+        imu_filter,
         robot_state_publisher,
         rviz_node,
         controller_manager,

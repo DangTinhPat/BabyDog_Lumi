@@ -1,0 +1,49 @@
+imu_kalman_filter:
+  ros__parameters:
+    # Hardware mounting transform, expressed as output_axis <- sign * input_axis.
+    # Identity is deliberately conservative until the physical board orientation
+    # is verified with the robot secured. Change only this mapping, never firmware
+    # signs, when adapting the sensor frame to imu_link (x forward, y left, z up).
+    # The permutation/sign combination must remain a right-handed rotation.
+    axis_map: [0, 1, 2]
+    axis_sign: [1.0, 1.0, 1.0]
+    frame_id: imu_link
+
+    # 2 seconds at the 100 Hz firmware/simulation rate. Samples must be
+    # consecutive and stationary; motion restarts calibration.
+    calibration_samples: 200
+    gravity: 9.80665
+    stationary_gyro_threshold: 0.15
+    # This real MPU6050 board reads |a| ~= 7.65 m/s^2 while genuinely
+    # stationary/level (confirmed 2026-08-17, no accel scale/offset
+    # calibration exists yet in this pipeline - only axis_map/axis_sign for
+    # orientation) - about 2.15 m/s^2 below the 9.80665 ideal. The old 0.8
+    # threshold made calibration restart forever even at rest. 3.0 gives
+    # margin over that baseline offset while still catching real handling/
+    # motion, which produces much larger swings than this sensor's static
+    # deviation.
+    stationary_accel_threshold: 3.0
+    minimum_dt: 0.001
+    maximum_dt: 0.1
+    stale_timeout_seconds: 0.25
+
+    # Roll/pitch angle+bias Kalman settings. Accelerometer corrections are
+    # automatically down-weighted when |a| differs from gravity.
+    angle_process_variance: 0.001
+    bias_process_variance: 0.003
+    accel_angle_measurement_variance: 0.03
+    adaptive_accel_threshold: 0.5
+    adaptive_accel_gain: 4.0
+    maximum_measurement_scale: 100.0
+
+    # Independent scalar Kalman filters for the published accel/gyro fields.
+    # Attitude prediction uses the bias-corrected gyro before this smoothing,
+    # avoiding extra control-path phase lag.
+    accel_process_variance: 0.05
+    accel_measurement_variance: 0.25
+    gyro_process_variance: 0.001
+    gyro_measurement_variance: 0.01
+
+    # MPU6050 has no magnetometer: yaw is gyro-integrated and deliberately
+    # advertised with high uncertainty.
+    yaw_variance: 1000.0

@@ -36,9 +36,13 @@ void Actuator_ReenableAll(void);
  * (tránh 2 nơi cùng rút frame khỏi 1 FIFO phần cứng). */
 void Actuator_OnBabyAlpha2Frame(uint32_t instance, const CAN_Frame *frame);
 
-/* angles_rad: 12 góc khớp mục tiêu (rad), thứ tự xem motor_topology.h
- * (JointIndex_t) - khớp với stand_sit_controller (phía ROS2)'s joints list. */
-void Actuator_SetTarget(const float angles_rad[12], float kp, float kd);
+/* Moi mang co 12 phan tu theo JointIndex_t, khop dung thu tu joints phia
+ * ROS2. angles_rad/velocities_rad_s/tau_ff_nm o khong gian LOGIC;
+ * actuator_if.c la noi duy nhat doi dau sang RAW. Velocity/Kp/Kd/Tff duoc
+ * clamp doc lap cho tung khop. */
+void Actuator_SetTarget(const float angles_rad[12], const float velocities_rad_s[12],
+                        const float kp[12],
+                        const float kd[12], const float tau_ff_nm[12]);
 
 /* Ngắt lực hoàn toàn (trạng thái Passive/ESTOP) - gửi kp=0/kd=nhỏ tới tất cả
  * khớp để board driver tự thả lỏng động cơ. */

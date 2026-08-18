@@ -3,7 +3,7 @@
 <package format="3">
     <name>controller</name>
     <version>0.0.0</version>
-    <description>ros2_control Cartesian stand/sit FSM using KDL FK/IK, with optional static gravity feedforward in simulation</description>
+    <description>ros2_control Cartesian stand/sit FSM using KDL FK/IK and ramped per-joint static load feedforward</description>
     <maintainer email="dangtinh.ftcpy@gmail.com">dvt</maintainer>
     <license>Apache-2.0</license>
 
@@ -24,10 +24,10 @@
     <exec_depend>joint_state_broadcaster</exec_depend>
     <exec_depend>rosidl_default_runtime</exec_depend>
 
-    <member_of_group>rosidl_interface_packages</member_of_group>
-
     <test_depend>ament_lint_auto</test_depend>
     <test_depend>ament_lint_common</test_depend>
+
+    <member_of_group>rosidl_interface_packages</member_of_group>
 
     <export>
         <build_type>ament_cmake</build_type>

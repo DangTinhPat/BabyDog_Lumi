@@ -28,9 +28,8 @@
 #include <stdint.h>
 #include "can.h" /* CAN_INSTANCE_1/2 */
 
-/* Thứ tự khớp 0-11, khớp với joints: trong
- * src/stand_sit_controller/.../config/controllers.yaml (phía ROS2) và
- * src/main_bot/description/babydog.xacro. */
+/* Thu tu khop 0-11, khop voi controller.ros__parameters.joints trong
+ * src/main_bot/config/controllers*.yaml va babydog.ros2_control.xacro. */
 typedef enum
 {
     JOINT_FRONT_RIGHT_ABAD = 0,

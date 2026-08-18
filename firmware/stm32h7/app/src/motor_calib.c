@@ -1,5 +1,12 @@
 #include "motor_calib.h"
 
+const float MOTOR_VELOCITY_ABS_LIMIT_RAD_S[JOINT_COUNT] = {
+    5.0f, 5.0f, 5.0f,
+    5.0f, 5.0f, 5.0f,
+    5.0f, 5.0f, 5.0f,
+    5.0f, 5.0f, 5.0f
+};
+
 /* [0] khong dung (JointType_t bat dau tu 1). Nguoi dung xac nhan truc tiep
  * (khong gian LOGIC, tuong doi so HOME = tu the nam xap luc cap nguon).
  *

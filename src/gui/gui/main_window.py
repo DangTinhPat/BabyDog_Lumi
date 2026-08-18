@@ -4,7 +4,7 @@ Ported as-is from superDog's gui/main_window.py (same process-control
 mechanism, styling, log panel, kill/shutdown buttons). The only functional
 change is the FSM row: superDog's movement joysticks/trot button/balance
 chart depended on unitree_guide_controller's gait controller (lx/ly/rx/ry
-fields on Inputs, live /imu) which babyDog does not have at this stage (see
+fields on Inputs, active-balance IMU state) which babyDog does not use yet (see
 README.md "Giới hạn đã biết") - controller/msg/Inputs only carries
 a bare `command` field, so that row is replaced with babyDog's actual
 Stand/Sit/Estop buttons (same 3 actions make stand/sit/estop and
@@ -16,9 +16,8 @@ interchangeably while Sim is running.
 
 Replaces the "open one terminal per task" workflow (launch the sim in one
 terminal, RViz in another, kill leftover gz/ros processes in a third, ...)
-with a single window: set the spawn parameters, start/stop `ros2 launch
-main_bot sim.launch.py` and `rz_sim.launch.py`, watch their log, and clear
-stale gz/ros processes on demand.
+with a single window. The read-only real-IMU pipeline is also available as an
+explicitly isolated row; it is mutually exclusive with motion backends.
 """
 
 import os
@@ -26,10 +25,12 @@ import queue
 import signal
 import subprocess
 import threading
+import time
 import tkinter as tk
 import tkinter.font as tkfont
 from tkinter import scrolledtext, ttk
 
+from ament_index_python.packages import get_package_share_directory
 import psutil
 
 # micro_ros_agent (goi cho nut "Start real hardware") KHONG nam trong workspace babyDog -
@@ -104,12 +105,13 @@ class SimControlGui:
 
     def __init__(self, root):
         self.root = root
-        self.root.title('babyDog sim control')
-        self.root.geometry('900x700')
+        self.root.title('babyDog Control + IMU')
+        self.root.geometry('980x780')
         self.root.minsize(760, 520)
 
         self.procs = {
-            'sim': None, 'rviz': None, 'joystick': None, 'real': None, 'rviz_real': None,
+            'sim': None, 'rviz': None, 'joystick': None, 'real': None,
+            'rviz_real': None, 'imu_view': None,
         }
         self.proc_widgets = {}
         self.fsm_widgets = []
@@ -186,7 +188,7 @@ class SimControlGui:
 
         header = ttk.Frame(self.root, padding=(16, 14, 16, 4))
         header.pack(fill='x')
-        ttk.Label(header, text='babyDog Sim Control', style='Header.TLabel').pack(side='left')
+        ttk.Label(header, text='babyDog Control + IMU', style='Header.TLabel').pack(side='left')
 
         params = ttk.LabelFrame(self.root, text='SPAWN PARAMETERS', padding=(14, 10))
         params.pack(fill='x', padx=16, pady=(10, 6))
@@ -234,6 +236,7 @@ class SimControlGui:
         ).pack(side='left')
 
         self._build_real_row()
+        self._build_imu_row()
         self._build_joystick_row()
         self._build_fsm_panel()
 
@@ -290,6 +293,7 @@ class SimControlGui:
         # khac hardware plugin. Domain ID tu dong khop 0 voi backend (xem os.environ o
         # dau file) - khong can nhap gi them o day.
         self.serial_dev_var = tk.StringVar(value='/dev/ttyUSB0')
+        self.serial_baud_var = tk.StringVar(value='921600')
 
         real_row = ttk.Frame(self.root, padding=(16, 4))
         real_row.pack(fill='x')
@@ -298,10 +302,12 @@ class SimControlGui:
             real_row, key='real', start_text='▶  Start real hardware', stop_text='■  Stop real hardware')
         ttk.Label(real_row, text='Serial', foreground=FG_MUTED).pack(side='left', padx=(14, 4))
         ttk.Entry(real_row, textvariable=self.serial_dev_var, width=14).pack(side='left')
+        ttk.Label(real_row, text='Baud', foreground=FG_MUTED).pack(side='left', padx=(10, 4))
+        ttk.Entry(real_row, textvariable=self.serial_baud_var, width=8).pack(side='left')
         ttk.Label(
             real_row, foreground=FG_MUTED,
-            text='  (VĐK thật qua micro-ROS/UART - dùng nút Đứng lên/Ngồi xuống bên dưới)'
-        ).pack(side='left', padx=(10, 0))
+            text='  (micro-ROS/UART + motor)'
+        ).pack(side='left', padx=(8, 0))
 
         rviz_real_row = ttk.Frame(self.root, padding=(16, 4))
         rviz_real_row.pack(fill='x')
@@ -315,6 +321,21 @@ class SimControlGui:
                 'bấm TF sẽ hiện đúng trạng thái robot thật hiện tại)'
             )
         ).pack(side='left')
+
+    def _build_imu_row(self):
+        imu_view_row = ttk.Frame(self.root, padding=(16, 4))
+        imu_view_row.pack(fill='x')
+        ttk.Label(imu_view_row, text='IMU', style='RowLabel.TLabel', width=6).pack(side='left')
+        self._build_process_controls(
+            imu_view_row, key='imu_view', start_text='▶  View IMU log',
+            stop_text='■  Close IMU log')
+        ttk.Label(
+            imu_view_row, foreground=FG_MUTED,
+            text=(
+                '  (chỉ mở cửa sổ xem /imu/raw + /imu/data, KHÔNG mở micro_ros_agent riêng - '
+                'dùng khi Sim/Real đã đang chạy sẵn pipeline IMU)'
+            )
+        ).pack(side='left', padx=(10, 0))
 
     def _build_joystick_row(self):
         # Index cua nut tren gamepad - khac nhau tuy tay cam (mac dinh 0/1/6 khop kieu
@@ -425,6 +446,7 @@ class SimControlGui:
             return [
                 'ros2', 'launch', 'main_bot', 'real_ros2_control.launch.py',
                 'serial_dev:=' + self.serial_dev_var.get(),
+                'serial_baud:=' + self.serial_baud_var.get(),
                 # real_ros2_control.launch.py mo RViz kem theo mac dinh - GUI co rieng 1
                 # hang 'RViz (real)' (key 'rviz_real') giong het pattern sim/rviz o tren,
                 # nen tat bundled rviz o day de tranh mo trung 2 cua so.
@@ -442,6 +464,13 @@ class SimControlGui:
                 'toggle_button:=' + self.toggle_button_var.get(),
                 'estop_button:=' + self.estop_button_var.get(),
             ]
+        if key == 'imu_view':
+            # Chi mo cua so Tk subscribe /imu/raw + /imu/data - KHONG tu mo
+            # micro_ros_agent rieng, nen dung duoc song song voi Sim/Real dang
+            # chay san pipeline IMU cua chinh no (xem real_ros2_control.launch.py
+            # / sim.launch.py da co imu_kalman_filter). Khong tham gia mutual
+            # exclusion vi khong tu mo agent nao ca.
+            return ['ros2', 'run', 'gui', 'imu_monitor']
         raise ValueError(key)
 
     def start_process(self, key):
@@ -569,7 +598,22 @@ class SimControlGui:
         for proc in self.procs.values():
             if proc is not None:
                 self._send_signal_to_group(proc.pid, signal.SIGINT)
-        self.root.after(STOP_GRACE_SECONDS * 1000, self._finish_shutdown)
+        # Poll instead of a blind STOP_GRACE_SECONDS wait - most of the time
+        # every launch has already exited well before the grace period, and
+        # there is no reason to make the user stare at "Dang tat..." for the
+        # full 5s just because that's the worst-case timeout. Still falls
+        # back to the same deadline for a launch that's slow/stuck to exit.
+        self._shutdown_deadline = time.monotonic() + STOP_GRACE_SECONDS
+        self._wait_for_shutdown()
+
+    def _wait_for_shutdown(self):
+        if all(proc is None for proc in self.procs.values()):
+            self._finish_shutdown()
+            return
+        if time.monotonic() >= self._shutdown_deadline:
+            self._finish_shutdown()
+            return
+        self.root.after(200, self._wait_for_shutdown)
 
     def _finish_shutdown(self):
         try:

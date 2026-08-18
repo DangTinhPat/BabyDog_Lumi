@@ -1,11 +1,11 @@
 # controller_manager config, loaded by sim.launch.py via babydog.xacro's
 # <ros2_control><gazebo><plugin><parameters>. Trimmed from superDog's
-# go1_controllers.yaml: no imu_sensor_broadcaster (no IMU yet, see
-# description/babydog.xacro) and unitree_guide_controller's full gait/balance
-# stack is replaced by "controller" (stand up / sit down only, no walking, no
-# active balance - that all needs IMU feedback we don't have yet). "controller"
-# uses KDL FK/IK for Cartesian Stand/Sit. Its Jacobian path also supports
-# static Tff (gravity feedforward) - see tau_ff_scale below, off by default.
+# go1_controllers.yaml: no imu_sensor_broadcaster because both sim and real IMU
+# use the dedicated /imu/raw -> imu_kalman_filter -> /imu/data topic path.
+# unitree_guide_controller's full gait/balance stack is replaced by "controller"
+# (stand up / sit down only, no active balance yet). "controller"
+# uses KDL FK/IK for Cartesian Stand/Sit. Its Jacobian path also provides
+# static Tff (gravity/load feedforward) - see tau_ff_* below.
 #
 # 1000Hz base rate because leg_pd_controller runs its own control loop at up
 # to the controller_manager's rate and wants to be fast.
@@ -102,14 +102,27 @@ controller:
     # per-joint effort limit (9.1 N*m vs Go1's 23.7/35.55 N*m) - untested first
     # guess inherited from superDog, needs empirical tuning once the robot is
     # spawned/on real hardware.
-    stand_kp: 50.0
-    stand_kd: 1.5
-    sit_kp: 50.0
-    sit_kd: 1.5
+    # Per-joint order: FR abad/hip/knee, FL, RR, RL. Values intentionally
+    # preserve the previous common gains; tune joint types independently only
+    # after logging real q error/velocity.
+    stand_kp: [50.0, 50.0, 50.0, 50.0, 50.0, 50.0,
+               50.0, 50.0, 50.0, 50.0, 50.0, 50.0]
+    stand_kd: [1.5, 1.5, 1.5, 1.5, 1.5, 1.5,
+               1.5, 1.5, 1.5, 1.5, 1.5, 1.5]
+    sit_kp: [50.0, 50.0, 50.0, 50.0, 50.0, 50.0,
+             50.0, 50.0, 50.0, 50.0, 50.0, 50.0]
+    sit_kd: [1.5, 1.5, 1.5, 1.5, 1.5, 1.5,
+             1.5, 1.5, 1.5, 1.5, 1.5, 1.5]
+
+    # Desired joint velocity is derived online from consecutive valid IK
+    # solutions: qd_des = (q_des[k] - q_des[k-1]) / period. Per-joint clamps
+    # prevent an IK/scheduler discontinuity from becoming a large D-term.
+    velocity_max_rad_s: [5.0, 5.0, 5.0, 5.0, 5.0, 5.0,
+                         5.0, 5.0, 5.0, 5.0, 5.0, 5.0]
 
     # Thoi gian noi suy tanh (giay) - mac dinh 1.2 (StateHoldPose.h) cho ca 2 chieu.
-    # sit_duration tang len day vi ban nhanh (1.2s) nhin giong nhu mat luc dot ngot,
-    # gay soc co khi that - tang len cham hon de giam gia toc luc dung yen.
+    # Smoothstep huu han: toi dung target trong duration, sau do chot nghiem IK
+    # cuoi va ep vel_des=0. Sit cham hon de tranh soc co khi that.
     stand_duration: 1.2
     sit_duration: 2.5
 
@@ -125,9 +138,24 @@ controller:
       - hind_right_foot
       - hind_left_foot
 
-    # Tff (gravity feedforward, sim only - see controller.xml/StateHoldPose.cpp).
-    # tau_ff_scale=0.0 => fully OFF (default, safe). tau_ff_max_nm is an
-    # absolute per-joint clamp (Nm) applied regardless of scale, sized well
-    # below devq's 9.1 N*m actuator limit.
-    tau_ff_scale: 0.0
-    tau_ff_max_nm: 2.0
+    # Static load feedforward: tau_ff = -J(q_measured)^T * F_support. Sim uses
+    # the full URDF weight (tau_ff_mass_kg=0, scale=1) to validate the model.
+    # Support ramps up during Stand and down during Sit; it is zero in
+    # Passive/ESTOP. Load-share order is FR, FL, RR, RL and must sum to 1.
+    # Sim keeps the older 5 N.m clamp; real-hardware clamp lives in
+    # controllers_real.yaml + firmware.
+    tau_ff_scale: 1.0
+    tau_ff_mass_kg: 0.0
+    tau_ff_ramp_seconds: 1.0
+    tau_ff_load_share: [0.25, 0.25, 0.25, 0.25]
+    tau_ff_joint_scale: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
+                         1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+    tau_ff_diagnostics_enabled: false
+    tau_ff_diagnostics_start_seconds: 2.0
+    tau_ff_diagnostics_period_seconds: 1.0
+    stand_joint_trim_rad: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                           0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    sit_joint_trim_rad: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                         0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    tau_ff_max_nm: [5.0, 5.0, 5.0, 5.0, 5.0, 5.0,
+                    5.0, 5.0, 5.0, 5.0, 5.0, 5.0]

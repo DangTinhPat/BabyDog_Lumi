@@ -31,6 +31,8 @@
 #include "can.h"
 #include "usart.h"
 #include "tick.h"
+#include "app_i2c.h"
+#include "mpu6050.h"
 #include "motor_topology.h"
 #include "baby_alpha2_protocol.h"
 #include "actuator_if.h"
@@ -97,6 +99,9 @@
 
 #define JOINT_FB_SEND_PERIOD_MS 5U /* ~200Hz, khớp nhịp update_rate cua controllers_real.yaml */
 #define JOINT_CMD_TIMEOUT_MS 200U /* mat /joint_cmd -> ngat luc, khong fallback goc */
+#define IMU_SAMPLE_PERIOD_MS 10U  /* MPU6050 configured at 100Hz */
+#define IMU_RETRY_PERIOD_MS 1000U
+#define IMU_MAX_CONSECUTIVE_READ_ERRORS 3U
 
 /* Cung gia tri toi uu da xac nhan qua ~/OUT_SAVE/testSTM (18.4Hz -> 41.6Hz o baudrate
  * 115200 cu, xem ~/OUT_SAVE/testSTM/README.md) - agent phia laptop (micro_ros_agent
@@ -245,7 +250,7 @@ static void send_udec(USART_TypeDef *u, uint32_t v)
  * nao - dung cho bring-up doc lap (chi MCU+1 driver, khong laptop, xem
  * Actuator_IsJointOk() header). Khop khong noi day day du du kien se bao
  * "TIMEOUT" (binh thuong, khong phai loi). */
-static void print_joint_bringup_report(void)
+static void print_joint_bringup_report(bool imu_ready)
 {
     USART_SendString(USART2, "\r\n=== BabyAlpha2 bring-up ===\r\n");
     for (int j = 0; j < (int)JOINT_COUNT; j++)
@@ -260,6 +265,8 @@ static void print_joint_bringup_report(void)
         USART_SendString(USART2, "): ");
         USART_SendString(USART2, Actuator_IsJointOk(j) ? "READY\r\n" : "TIMEOUT (khong noi day/driver chua bat)\r\n");
     }
+    USART_SendString(USART2, "imu (MPU6050 I2C1 PB7/PB8): ");
+    USART_SendString(USART2, imu_ready ? "READY\r\n" : "INIT FAILED (WHO_AM_I sai hoac khong phan hoi I2C)\r\n");
     USART_SendString(USART2, "=== het bao cao ===\r\n");
 }
 
@@ -396,6 +403,11 @@ int main(void)
     usart1_init();
     usart2_debug_init();
     led_init();
+    AppI2c1_Init();
+
+    /* IMU is observational only: a missing sensor never blocks CAN, motor
+     * watchdog, or Stand/Sit. The superloop retries it periodically below. */
+    bool imu_ready = MPU6050_Init();
 
 #if BRINGUP_UART_ECHO_ONLY
     uart_echo_only_bringup_loop(); /* khong tra ve - dat TRUOC CAN_Init, xem chi tiet o duoi */
@@ -431,11 +443,14 @@ int main(void)
 #endif
 
     Actuator_Init();
-    print_joint_bringup_report();
+    print_joint_bringup_report(imu_ready);
 
     MicroRosBridge_Begin();
 
     uint32_t last_joint_fb_ms = 0U;
+    uint32_t last_imu_sample_ms = 0U;
+    uint32_t last_imu_retry_ms = Tick_GetMs();
+    uint32_t imu_consecutive_read_errors = 0U;
     uint32_t last_led_toggle_ms = 0U;
     uint32_t last_reenable_ms = 0U;
     /* Dung "epoch" cua chinh last_joint_cmd_ms lam moc, thay vi 1 co bool don
@@ -498,6 +513,40 @@ int main(void)
         {
             last_joint_fb_ms = now_ms;
             MicroRosBridge_PublishJointFb();
+        }
+
+        if (imu_ready && ((now_ms - last_imu_sample_ms) >= IMU_SAMPLE_PERIOD_MS))
+        {
+            last_imu_sample_ms = now_ms;
+            MPU6050_Reading reading;
+            if (MPU6050_Read(&reading))
+            {
+                imu_consecutive_read_errors = 0U;
+                MicroRosBridge_PublishImuRaw(
+                    &reading, MICROROS_IMU_STATUS_OK, now_ms);
+            }
+            else
+            {
+                MicroRosBridge_PublishImuRaw(
+                    NULL, MICROROS_IMU_STATUS_READ_FAILED, now_ms);
+                imu_consecutive_read_errors++;
+                if (imu_consecutive_read_errors >= IMU_MAX_CONSECUTIVE_READ_ERRORS)
+                {
+                    imu_ready = false;
+                    last_imu_retry_ms = now_ms;
+                }
+            }
+        }
+        else if (!imu_ready && ((now_ms - last_imu_retry_ms) >= IMU_RETRY_PERIOD_MS))
+        {
+            last_imu_retry_ms = now_ms;
+            imu_ready = MPU6050_Init();
+            imu_consecutive_read_errors = 0U;
+            if (!imu_ready)
+            {
+                MicroRosBridge_PublishImuRaw(
+                    NULL, MICROROS_IMU_STATUS_INIT_FAILED, now_ms);
+            }
         }
 
         /* Nhac lai MOTOR_ENABLE dinh ky - xem Actuator_ReenableAll() header,

@@ -4,8 +4,9 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-/* micro-ROS node "stm32_joint_node" voi subscriber "/joint_cmd" + publisher "/joint_fb"
- * (main_bot_hardware_msgs), qua UART1/micro_ros_agent thay vi CAN. Cung reconnect
+/* micro-ROS node "stm32_joint_node" voi subscriber "/joint_cmd" + publishers
+ * "/joint_fb" and compact "/imu/raw" (main_bot_hardware_msgs), qua UART1/
+ * micro_ros_agent thay vi CAN. Cung reconnect
  * state machine (ping dinh ky khi da connected) voi OUT_SAVE/testSTM/app/src/microros_bridge.c,
  * nhung KHONG FreeRTOS (dung Tick_GetMs() thay xTaskGetTickCount(), khong goi
  * MicroRos_InstallFreeRTOSAllocator() - xem microros_time.c va ghi chu trong .c).
@@ -28,5 +29,20 @@ uint32_t MicroRosBridge_LastJointCmdMs(void);
 /* No-op (bo qua) neu chua connected - an toan goi vo dieu kien moi chu ky
  * JOINT_FB_SEND_PERIOD_MS trong main.c. Tu doc Actuator_GetMeasured() ben trong. */
 void MicroRosBridge_PublishJointFb(void);
+
+typedef enum
+{
+    MICROROS_IMU_STATUS_OK = 1U,
+    MICROROS_IMU_STATUS_INIT_FAILED = 2U,
+    MICROROS_IMU_STATUS_READ_FAILED = 4U,
+} MicroRosImuStatus;
+
+struct MPU6050_Reading;
+
+/* Publish one compact fixed-size IMU sample. reading may be NULL for a status-only
+ * error frame; the EC Kalman node rejects any frame without STATUS_OK. */
+void MicroRosBridge_PublishImuRaw(const struct MPU6050_Reading *reading,
+                                  MicroRosImuStatus status,
+                                  uint32_t stamp_ms);
 
 #endif /* MICROROS_BRIDGE_H */

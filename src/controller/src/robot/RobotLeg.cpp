@@ -84,6 +84,19 @@ bool RobotLeg::calcQPosition(const KDL::Vector &target_position,
     return true;
 }
 
+bool RobotLeg::clampToLimits(KDL::JntArray &q) const {
+    if (q.rows() != chain_.getNrOfJoints()) {
+        return false;
+    }
+    bool clamped = false;
+    for (unsigned int i = 0; i < chain_.getNrOfJoints(); ++i) {
+        const double bounded = std::clamp(q(i), q_min_(i), q_max_(i));
+        clamped = clamped || (bounded != q(i));
+        q(i) = bounded;
+    }
+    return clamped;
+}
+
 KDL::Jacobian RobotLeg::calcJaco(const KDL::JntArray &joint_positions) const {
     KDL::Jacobian jacobian(chain_.getNrOfJoints());
     jac_solver_->JntToJac(joint_positions, jacobian);

@@ -5,11 +5,16 @@
 # không cần bạn source tay trước (nhưng phải `make build` ít nhất 1 lần trước).
 
 ROS_DISTRO ?= jazzy
+MROS_WS ?= $(HOME)/mros/mros_ws
+IMU_SERIAL_DEV ?= /dev/ttyUSB0
+IMU_SERIAL_BAUD ?= 921600
 SHELL := /bin/bash
 ROS_SETUP := source /opt/ros/$(ROS_DISTRO)/setup.bash && source install/setup.bash
+MROS_SETUP := source /opt/ros/$(ROS_DISTRO)/setup.bash && source $(MROS_WS)/install/setup.bash
 
 .PHONY: help build sim sim-no-rviz rz-sim real real-no-rviz rz-real gui keyboard joystick \
-        firmware firmware-flash controllers estop stand sit clean firmware-clean kill
+        imu-test imu-monitor firmware firmware-flash microros-lib controllers estop stand sit \
+        clean firmware-clean kill
 
 help:
 	@echo "Mô phỏng (chạy trên máy dev, cần ROS2 Jazzy + Gazebo Harmonic):"
@@ -19,7 +24,7 @@ help:
 	@echo "  make rz-sim         - CHỈ mở RViz (Grid+TF, không có robot bên trong lúc mở) -"
 	@echo "                        chạy song song với make sim-no-rviz (terminal khác), bấm"
 	@echo "                        TF sẽ hiện đúng trạng thái sim đang chạy"
-	@echo "  make gui            - bảng điều khiển Tkinter (start/stop sim+rviz, Đứng/Ngồi/Estop, log, kill)"
+	@echo "  make gui            - GUI chung: sim/real/FSM và hàng test IMU-only raw/filtered"
 	@echo ""
 	@echo "Robot thật (cần firmware đã nạp + micro_ros_agent workspace đã source, xem GUIDE.md):"
 	@echo "  make real           - robot thật + RViz (TF2 cập nhật từ /joint_states thật)"
@@ -31,9 +36,12 @@ help:
 	@echo "  make joystick       - joy_node + joystick thật -> /control_input"
 	@echo "  make stand / sit / estop - gửi lệnh 1 lần qua CLI (test nhanh không cần joystick)"
 	@echo "  make controllers    - liệt kê trạng thái controller_manager"
+	@echo "  make imu-test       - test MPU6050 thật độc lập: micro-ROS + Kalman + màn hình log"
+	@echo "  make imu-monitor    - chỉ mở màn hình raw/filtered trên pipeline IMU đang chạy"
 	@echo "  make kill           - tắt hết tiến trình Gazebo còn sót"
 	@echo ""
 	@echo "Firmware STM32H7 (cần arm-none-eabi-gcc, xem firmware/stm32h7/README.md):"
+	@echo "  make microros-lib    - regenerate lib/type-support MCU sau khi đổi JointCmd/JointFb/ImuRaw"
 	@echo "  make firmware       - build firmware/stm32h7"
 	@echo "  make firmware-flash - build + nạp qua ST-Link (st-flash)"
 	@echo "  make firmware-clean - xoá build firmware"
@@ -82,11 +90,24 @@ estop:
 controllers:
 	$(ROS_SETUP) && ros2 control list_controllers
 
+imu-test:
+	BABYDOG_MROS_WS="$(MROS_WS)" bash src/gui/scripts/imu_real_test.sh \
+		"$(IMU_SERIAL_DEV)" "$(IMU_SERIAL_BAUD)"
+
+imu-monitor:
+	export ROS_DOMAIN_ID=0 && $(ROS_SETUP) && ros2 run gui imu_monitor
+
 kill:
 	bash src/main_bot/scripts/kill_gz.sh
 
 firmware:
 	$(MAKE) -C firmware/stm32h7
+
+microros-lib:
+	cd firmware/stm32h7/microros && $(MROS_SETUP) && \
+		ros2 run micro_ros_setup build_firmware.sh -- \
+		$(CURDIR)/firmware/stm32h7/microros/toolchain.cmake \
+		$(CURDIR)/firmware/stm32h7/microros/firmware/mcu_ws/colcon.meta
 
 firmware-flash:
 	$(MAKE) -C firmware/stm32h7 flash

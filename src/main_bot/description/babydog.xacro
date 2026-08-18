@@ -12,11 +12,8 @@
      STM32H7 over FDCAN). Per-leg joint naming is abad(roll)/hip(pitch)/
      knee(pitch), same 3-DOF-per-leg structure as Go1's hip/thigh/calf, just
      renamed - see controllers.yaml's joints/feet_names lists (base_name:
-     "base" is the dummy root link below). No IMU sensor interface yet (real
-     robot doesn't have one wired up yet either) - see sensors/imu.xacro,
-     currently unused; re-add its include in robot.urdf.xacro plus the
-     imu_sensor <ros2_control> block (babydog.ros2_control.xacro) once the
-     real IMU is wired to the STM32. -->
+     "base" is the dummy root link below). imu_link is shared by the Gazebo
+     sensor and the real MPU6050's filtered /imu/data frame. -->
 <robot name="babydog" xmlns:xacro="http://www.ros.org/wiki/xacro">
   <material name="black">
     <color rgba="0.0 0.0 0.0 1.0"/>

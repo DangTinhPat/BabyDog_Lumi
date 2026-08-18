@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <numeric>
 
 namespace controller
 {
@@ -79,6 +80,12 @@ namespace controller
         }
         else if (mode_ == FSMMode::CHANGE)
         {
+            // StateHoldPose giu Tff qua bien Stand<->Sit de ramp mem. Moi duong
+            // sang Passive/ESTOP phai reset blend truoc khi state cu exit.
+            if (next_state_name_ == FSMStateName::PASSIVE)
+            {
+                tau_ff_support_blend_ = 0.0;
+            }
             current_state_->exit();
             current_state_ = next_state_;
 
@@ -130,20 +137,40 @@ namespace controller
                 return controller_interface::CallbackReturn::ERROR;
             }
 
-            stand_kp_ = auto_declare<double>("stand_kp", stand_kp_);
-            stand_kd_ = auto_declare<double>("stand_kd", stand_kd_);
-            sit_kp_ = auto_declare<double>("sit_kp", sit_kp_);
-            sit_kd_ = auto_declare<double>("sit_kd", sit_kd_);
-            // kp<=0 -> PD khong con luc phuc hoi ve target (hoac day nguoc huong neu
-            // am) - kd<0 tuong tu khong hop ly ve vat ly cho khop dan dong PD cuc bo.
-            // Chan som truoc khi gia tri nay toi tay dong co that.
-            if (stand_kp_ <= 0.0 || stand_kd_ < 0.0 || sit_kp_ <= 0.0 || sit_kd_ < 0.0)
+            stand_kp_ = auto_declare<std::vector<double>>("stand_kp", stand_kp_);
+            stand_kd_ = auto_declare<std::vector<double>>("stand_kd", stand_kd_);
+            sit_kp_ = auto_declare<std::vector<double>>("sit_kp", sit_kp_);
+            sit_kd_ = auto_declare<std::vector<double>>("sit_kd", sit_kd_);
+            velocity_max_rad_s_ = auto_declare<std::vector<double>>(
+                "velocity_max_rad_s", velocity_max_rad_s_);
+            // Gain la hop dong 12-khop: sai kich thuoc phai fail som, khong
+            // fallback ve khop[0] hay doc ngoai vector. Firmware con clamp lop
+            // 2, nhung EC van phai tu choi NaN/inf/gain am truoc khi publish.
+            const auto valid_gain_vector = [](const std::vector<double>& values, const bool strictly_positive) {
+                return values.size() == 12 &&
+                       std::all_of(values.begin(), values.end(), [strictly_positive](const double value) {
+                           return std::isfinite(value) &&
+                                  (strictly_positive ? value > 0.0 : value >= 0.0);
+                       });
+            };
+            if (!valid_gain_vector(stand_kp_, true) || !valid_gain_vector(stand_kd_, false) ||
+                !valid_gain_vector(sit_kp_, true) || !valid_gain_vector(sit_kd_, false))
             {
                 RCLCPP_ERROR(get_node()->get_logger(),
-                             "kp phai > 0, kd phai >= 0 (stand_kp=%.3f stand_kd=%.3f sit_kp=%.3f "
-                             "sit_kd=%.3f) - gia tri am/khong se khien PD khong giu duoc tu the "
-                             "hoac day khop sai huong",
-                             stand_kp_, stand_kd_, sit_kp_, sit_kd_);
+                             "stand/sit Kp/Kd phai la mang 12 gia tri huu han; Kp>0, Kd>=0");
+                return controller_interface::CallbackReturn::ERROR;
+            }
+            if (velocity_max_rad_s_.size() != 12 ||
+                !std::all_of(velocity_max_rad_s_.begin(), velocity_max_rad_s_.end(),
+                             [](const double value) {
+                                 // BabyAlpha2 wire range is +/-45 rad/s, but
+                                 // /joint_cmd uses int16 mrad/s. Stay inside
+                                 // both representations; shipped config is 5.
+                                 return std::isfinite(value) && value > 0.0 && value <= 32.767;
+                             }))
+            {
+                RCLCPP_ERROR(get_node()->get_logger(),
+                             "velocity_max_rad_s phai la mang 12 gia tri huu han trong (0,32.767]");
                 return controller_interface::CallbackReturn::ERROR;
             }
 
@@ -167,7 +194,102 @@ namespace controller
                 return controller_interface::CallbackReturn::ERROR;
             }
             tau_ff_scale_ = auto_declare<double>("tau_ff_scale", tau_ff_scale_);
-            tau_ff_max_nm_ = auto_declare<double>("tau_ff_max_nm", tau_ff_max_nm_);
+            tau_ff_mass_kg_ = auto_declare<double>("tau_ff_mass_kg", tau_ff_mass_kg_);
+            tau_ff_ramp_seconds_ = auto_declare<double>(
+                "tau_ff_ramp_seconds", tau_ff_ramp_seconds_);
+            tau_ff_load_share_ = auto_declare<std::vector<double>>(
+                "tau_ff_load_share", tau_ff_load_share_);
+            tau_ff_joint_scale_ = auto_declare<std::vector<double>>(
+                "tau_ff_joint_scale", tau_ff_joint_scale_);
+            tau_ff_diagnostics_enabled_ = auto_declare<bool>(
+                "tau_ff_diagnostics_enabled", tau_ff_diagnostics_enabled_);
+            tau_ff_diagnostics_start_seconds_ = auto_declare<double>(
+                "tau_ff_diagnostics_start_seconds", tau_ff_diagnostics_start_seconds_);
+            tau_ff_diagnostics_period_seconds_ = auto_declare<double>(
+                "tau_ff_diagnostics_period_seconds", tau_ff_diagnostics_period_seconds_);
+            stand_joint_trim_rad_ = auto_declare<std::vector<double>>(
+                "stand_joint_trim_rad", stand_joint_trim_rad_);
+            sit_joint_trim_rad_ = auto_declare<std::vector<double>>(
+                "sit_joint_trim_rad", sit_joint_trim_rad_);
+            tau_ff_max_nm_ = auto_declare<std::vector<double>>("tau_ff_max_nm", tau_ff_max_nm_);
+            if (!std::isfinite(tau_ff_scale_) || tau_ff_scale_ < 0.0 || tau_ff_scale_ > 1.0)
+            {
+                RCLCPP_ERROR(get_node()->get_logger(), "tau_ff_scale phai huu han va nam trong [0,1]");
+                return controller_interface::CallbackReturn::ERROR;
+            }
+            if (!std::isfinite(tau_ff_mass_kg_) || tau_ff_mass_kg_ < 0.0 ||
+                tau_ff_mass_kg_ > 50.0)
+            {
+                RCLCPP_ERROR(get_node()->get_logger(),
+                             "tau_ff_mass_kg phai huu han va nam trong [0,50] kg; 0 = dung mass URDF");
+                return controller_interface::CallbackReturn::ERROR;
+            }
+            if (!std::isfinite(tau_ff_ramp_seconds_) ||
+                tau_ff_ramp_seconds_ < 0.1 || tau_ff_ramp_seconds_ > 10.0)
+            {
+                RCLCPP_ERROR(get_node()->get_logger(),
+                             "tau_ff_ramp_seconds phai huu han va nam trong [0.1,10] giay");
+                return controller_interface::CallbackReturn::ERROR;
+            }
+            const double load_share_sum = std::accumulate(
+                tau_ff_load_share_.begin(), tau_ff_load_share_.end(), 0.0);
+            if (tau_ff_load_share_.size() != 4 ||
+                !std::all_of(tau_ff_load_share_.begin(), tau_ff_load_share_.end(),
+                             [](const double value) {
+                                 return std::isfinite(value) && value >= 0.0 && value <= 1.0;
+                             }) ||
+                !std::isfinite(load_share_sum) || std::abs(load_share_sum - 1.0) > 1e-6)
+            {
+                RCLCPP_ERROR(get_node()->get_logger(),
+                             "tau_ff_load_share phai la 4 gia tri trong [0,1] co tong bang 1");
+                return controller_interface::CallbackReturn::ERROR;
+            }
+            if (tau_ff_joint_scale_.size() != 12 ||
+                !std::all_of(tau_ff_joint_scale_.begin(), tau_ff_joint_scale_.end(),
+                             [](const double value) {
+                                 return std::isfinite(value) && value >= 0.0 && value <= 2.0;
+                             }))
+            {
+                RCLCPP_ERROR(get_node()->get_logger(),
+                             "tau_ff_joint_scale phai la mang 12 gia tri huu han trong [0,2]");
+                return controller_interface::CallbackReturn::ERROR;
+            }
+            if (!std::isfinite(tau_ff_diagnostics_start_seconds_) ||
+                tau_ff_diagnostics_start_seconds_ < 0.0 ||
+                tau_ff_diagnostics_start_seconds_ > 60.0 ||
+                !std::isfinite(tau_ff_diagnostics_period_seconds_) ||
+                tau_ff_diagnostics_period_seconds_ <= 0.0 ||
+                tau_ff_diagnostics_period_seconds_ > 60.0)
+            {
+                RCLCPP_ERROR(get_node()->get_logger(),
+                             "tau_ff_diagnostics_start_seconds phai trong [0,60], "
+                             "tau_ff_diagnostics_period_seconds phai trong (0,60]");
+                return controller_interface::CallbackReturn::ERROR;
+            }
+            const auto valid_trim_vector = [](const std::vector<double>& values) {
+                return values.size() == 12 &&
+                       std::all_of(values.begin(), values.end(), [](const double value) {
+                           return std::isfinite(value) && std::abs(value) <= 0.35;
+                       });
+            };
+            if (!valid_trim_vector(stand_joint_trim_rad_) || !valid_trim_vector(sit_joint_trim_rad_))
+            {
+                RCLCPP_ERROR(get_node()->get_logger(),
+                             "stand/sit_joint_trim_rad phai la mang 12 gia tri huu han trong [-0.35,0.35] rad");
+                return controller_interface::CallbackReturn::ERROR;
+            }
+            if (tau_ff_max_nm_.size() != 12 ||
+                !std::all_of(tau_ff_max_nm_.begin(), tau_ff_max_nm_.end(), [](const double value) {
+                    // BabyAlpha2 ma hoa duoc +/-24 N.m, nhung gioi han phan
+                    // cung du an dang tune la +/-10 N.m. EC khong cho phep
+                    // config vuot tran nay; RealSystem va MCU con kep lai.
+                    return std::isfinite(value) && value >= 0.0 && value <= 10.0;
+                }))
+            {
+                RCLCPP_ERROR(get_node()->get_logger(),
+                             "tau_ff_max_nm phai la mang 12 gia tri huu han trong [0,10] N.m");
+                return controller_interface::CallbackReturn::ERROR;
+            }
 
             get_node()->get_parameter("update_rate", ctrl_interfaces_.frequency_);
             RCLCPP_INFO(get_node()->get_logger(), "Controller Manager Update Rate: %d Hz",
@@ -254,14 +376,38 @@ namespace controller
             state_interface_map_[interface.get_interface_name()]->push_back(interface);
         }
 
+        RCLCPP_INFO(
+            get_node()->get_logger(),
+            "Command interfaces mapped: position=%zu velocity=%zu kp=%zu kd=%zu effort/Tff=%zu",
+            ctrl_interfaces_.joint_position_command_interface_.size(),
+            ctrl_interfaces_.joint_velocity_command_interface_.size(),
+            ctrl_interfaces_.joint_kp_command_interface_.size(),
+            ctrl_interfaces_.joint_kd_command_interface_.size(),
+            ctrl_interfaces_.joint_torque_command_interface_.size());
+        if (tau_ff_scale_ > 0.0 && ctrl_interfaces_.joint_torque_command_interface_.size() != 12)
+        {
+            RCLCPP_ERROR(get_node()->get_logger(),
+                         "tau_ff_scale>0 nhung effort/Tff command interface khong du 12");
+            return CallbackReturn::ERROR;
+        }
+
         // Create FSM List
         state_list_.passive = std::make_shared<StatePassive>(ctrl_interfaces_);
+        tau_ff_support_blend_ = 0.0;
         state_list_.stand = std::make_shared<StateHoldPose>(
-            ctrl_interfaces_, FSMStateName::STAND, "stand", stand_foot_positions_, stand_kp_, stand_kd_, stand_duration_,
-            robot_model_, tau_ff_scale_, tau_ff_max_nm_);
+            ctrl_interfaces_, FSMStateName::STAND, "stand", stand_foot_positions_, stand_kp_, stand_kd_,
+            velocity_max_rad_s_, stand_duration_,
+            robot_model_, tau_ff_scale_, tau_ff_mass_kg_, tau_ff_ramp_seconds_, tau_ff_load_share_,
+            tau_ff_joint_scale_, tau_ff_diagnostics_enabled_,
+            tau_ff_diagnostics_start_seconds_, tau_ff_diagnostics_period_seconds_,
+            stand_joint_trim_rad_, tau_ff_support_blend_, tau_ff_max_nm_);
         state_list_.sit = std::make_shared<StateHoldPose>(
-            ctrl_interfaces_, FSMStateName::SIT, "sit", sit_foot_positions_, sit_kp_, sit_kd_, sit_duration_,
-            robot_model_, tau_ff_scale_, tau_ff_max_nm_);
+            ctrl_interfaces_, FSMStateName::SIT, "sit", sit_foot_positions_, sit_kp_, sit_kd_,
+            velocity_max_rad_s_, sit_duration_,
+            robot_model_, tau_ff_scale_, tau_ff_mass_kg_, tau_ff_ramp_seconds_, tau_ff_load_share_,
+            tau_ff_joint_scale_, tau_ff_diagnostics_enabled_,
+            tau_ff_diagnostics_start_seconds_, tau_ff_diagnostics_period_seconds_,
+            sit_joint_trim_rad_, tau_ff_support_blend_, tau_ff_max_nm_);
 
         // Initialize FSM
         current_state_ = state_list_.passive;
@@ -276,6 +422,20 @@ namespace controller
     controller_interface::CallbackReturn StandSitController::on_deactivate(
         const rclcpp_lifecycle::State& /*previous_state*/)
     {
+        // Ghi mot lenh Passive cuoi cung TRUOC KHI nha loaned interfaces. Neu
+        // chi release, cac backing value trong RealSystem co the van giu Kp/Tff
+        // cua Stand/Sit va tiep tuc duoc publish trong cac chu ky hardware sau.
+        // Reset support blend roi Passive::enter() xoa toan bo effort/Kp va dat
+        // Kd=1 cho ca 12 khop.
+        if (current_state_)
+        {
+            tau_ff_support_blend_ = 0.0;
+            current_state_->exit();
+        }
+        if (state_list_.passive)
+        {
+            state_list_.passive->enter();
+        }
         release_interfaces();
         return CallbackReturn::SUCCESS;
     }

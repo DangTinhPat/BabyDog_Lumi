@@ -41,9 +41,11 @@
 /* ===== Ma hoa / giai ma so hoc =====
  * p_des:  HR=16.384 rad, raw = q/16.384*32768+32768
  * p_act:  HR=32.768 rad, raw = (raw-32768)/65535*32.768
+ * v_des:  HR=45 rad/s, raw = v/45*32768+32768
  * Kp/Kd:  raw = gain*100
  * tau_ff: dai +-24 N.m, raw = (tau+24)/48*65535, 0x8000 = 0 N.m */
 uint16_t BA2_EncodePosDes(float q_rad);
+uint16_t BA2_EncodeVelDes(float velocity_rad_s);
 float    BA2_DecodePosAct(uint16_t raw);
 /* Chieu nguoc cua BA2_DecodePosAct() - KHONG co trong ban goc oneLeg (noi do
  * dung bang raw co dinh tinh san cho 1 chan cu the), can them de tinh
@@ -83,10 +85,11 @@ CAN_Frame BA2_BuildCalibEncoderFrame(uint32_t id, uint16_t offset_raw);
 CAN_Frame BA2_BuildSetupLimitsFrame(uint32_t id, uint16_t max_raw,
                                     uint16_t min_raw, uint16_t vmax_raw);
 
-/* Khung PD day du. v_des luon gui hang so 0x7FFE (~0) - thang ma hoa THUC
- * cua o nay CHUA duoc xac minh tren phan cung nen khong dung gia tri khac 0.
- * tau_nm da duoc kep boi goi tau_abs_limit_nm truoc khi ma hoa. */
-CAN_Frame BA2_BuildPdFrame(uint32_t id, float pos_rad, float kp, float kd,
+/* Khung PD day du. velocity_rad_s duoc ma hoa offset-binary tren dai
+ * [-45,+45] rad/s; 0 rad/s = 0x8000. Caller van phai kep theo gioi han van
+ * hanh cua tung khop. tau_nm duoc kep boi tau_abs_limit_nm khi ma hoa. */
+CAN_Frame BA2_BuildPdFrame(uint32_t id, float pos_rad, float velocity_rad_s,
+                           float kp, float kd,
                            float tau_nm, float tau_abs_limit_nm);
 
 #endif /* BABY_ALPHA2_PROTOCOL_H */

@@ -39,16 +39,20 @@
  * 32.94 rad/s -> 0x80AC) - ca 2 nguon khop nhau. */
 #define MOTOR_VMAX_RAW   0x80ACU
 
-/* Mo-men feedforward - KHONG dung trong ban ke thua nay (xem plan "KHONG ke
- * thua lan nay": tau_ff can Jacobian + thong so co khi do that + quy dao
- * muot moi an toan, oneLeg tu ket luan 4 lan thu deu vot lo 7-14 lan khi
- * chua du dieu kien do). Van gui 0.0f qua BA2_BuildPdFrame() nhung van can
- * 1 tran tuyet doi hop le de ham do khong bao gio ma hoa gia tri vo nghia
- * neu sau nay bat lai. Tai lieu chinh thuc cho phep toi da 24.0 N.m. */
-#define MOTOR_TAU_ABS_LIMIT_NM   3.0f
+/* Tran v_des LOP 2 theo tung khop, doc lap voi velocity_max_rad_s tren EC.
+ * Giao thuc cho phep +/-45 rad/s va SETUP_LIMITS dang la 32.94 rad/s, nhung
+ * Stand/Sit hien tai chi can toc do thap hon nhieu. Khoi dau bao thu 5 rad/s;
+ * tach mang 12 phan tu de co the ha rieng abad/hip/knee sau khi log robot that. */
+extern const float MOTOR_VELOCITY_ABS_LIMIT_RAD_S[JOINT_COUNT];
 
-/* Do cung PD dung chung 12 khop (Actuator_SetTarget(angles, kp, kd) hien co
- * chi nhan 1 cap kp/kd, khop dung thiet ke nay). Dai hop le da xac nhan LAI voi
+/* Mo-men feedforward: duong truyen 12-khop da co; ROS2 tinh Tff luc Stand va
+ * scale robot that duoc tune tren EC trong controllers_real.yaml sau khi baseline
+ * Tff=0 xac nhan dau -J^T*F. Day la tran firmware doc lap,
+ * bat buoc kep lai moi lenh truoc CAN-FD. Giao thuc ma hoa duoc +/-24 N.m;
+ * tran du an hien tai dang tune la +/-10 N.m. */
+#define MOTOR_TAU_ABS_LIMIT_NM   10.0f
+
+/* Dai hop le Kp/Kd cho tung khop da xac nhan LAI voi
  * hang (2026-08-14): Kp toi da = 60.0 (tai lieu ghi 5.0 la loi danh may), Kd=[0,40.0]
  * N.m(.s)/rad. GIA TRI KHOI DIEM o day van thap (an toan luc chua kiem chung) -
  * TANG DAN theo Verification cua plan (treo chan khong tai, quan sat tung khop)

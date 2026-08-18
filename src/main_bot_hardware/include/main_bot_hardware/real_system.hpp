@@ -11,12 +11,12 @@
 #include <main_bot_hardware_msgs/msg/joint_cmd.hpp>
 #include <main_bot_hardware_msgs/msg/joint_fb.hpp>
 
-// hardware_interface::SystemInterface cho robot that - relay position/kp/kd toi
+// hardware_interface::SystemInterface cho robot that - relay position/velocity/kp/kd/effort(Tff) toi
 // firmware/stm32h7 qua micro-ROS/UART (topic "/joint_cmd"/"/joint_fb",
-// main_bot_hardware_msgs, cung field/don vi voi ban CAN cu - xem README/plan), firmware
-// forward xuong 12 board driver khop (da co san, actuator_if.c). Khac gz_ros2_control/
-// GazeboSimSystem o cho export "position"/"kp"/"kd" - dung nang luc that cua board
-// driver khop (tu lam PD cuc bo), khong gia lap effort/torque nhu sim.
+// main_bot_hardware_msgs), firmware forward xuong 12 board driver khop qua CAN-FD
+// (actuator_if.c). Khac gz_ros2_control/
+// GazeboSimSystem o cho export "position"/"velocity"/"kp"/"kd"/"effort" thang toi
+// board driver khop (tu lam PD cuc bo + cong tau_ff).
 //
 // Dung get_node() (hardware_interface::HardwareComponentInterface, framework tu tao +
 // tu spin cho moi hardware plugin) de publish/subscribe thang - KHONG tu quan ly
@@ -58,7 +58,7 @@ private:
   bool has_joint_fb_ = false;
 
   // Thu tu khop voi info_.joints (tu xacro/controllers_real.yaml, PHAI dung 12 khop
-  // theo dung thu tu JointIndex_t trong motor_protocol.h - khong tu sap xep lai).
+  // theo dung thu tu JointIndex_t trong motor_topology.h - khong tu sap xep lai).
   static constexpr uint32_t kJointCount = 12U;
   std::array<double, kJointCount> position_state_{};
   std::array<double, kJointCount> velocity_state_{};
@@ -68,8 +68,10 @@ private:
   // hardware plugin thuc su export.
   std::array<double, kJointCount> effort_state_{};
   std::array<double, kJointCount> position_command_{};
+  std::array<double, kJointCount> velocity_command_{};
   std::array<double, kJointCount> kp_command_{};
   std::array<double, kJointCount> kd_command_{};
+  std::array<double, kJointCount> effort_command_{};
 };
 
 }  // namespace main_bot_hardware

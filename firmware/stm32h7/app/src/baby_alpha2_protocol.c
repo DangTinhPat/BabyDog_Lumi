@@ -8,6 +8,14 @@ uint16_t BA2_EncodePosDes(float q_rad)
     return (uint16_t)(raw_f + 0.5f);
 }
 
+uint16_t BA2_EncodeVelDes(float velocity_rad_s)
+{
+    float raw_f = (velocity_rad_s / 45.0f) * 32768.0f + 32768.0f;
+    if (raw_f < 0.0f) { raw_f = 0.0f; }
+    if (raw_f > 65535.0f) { raw_f = 65535.0f; }
+    return (uint16_t)(raw_f + 0.5f);
+}
+
 float BA2_DecodePosAct(uint16_t raw)
 {
     return ((float)raw - 32768.0f) / 65535.0f * 32.768f;
@@ -78,7 +86,8 @@ CAN_Frame BA2_BuildSetupLimitsFrame(uint32_t id, uint16_t max_raw,
     return f;
 }
 
-CAN_Frame BA2_BuildPdFrame(uint32_t id, float pos_rad, float kp, float kd,
+CAN_Frame BA2_BuildPdFrame(uint32_t id, float pos_rad, float velocity_rad_s,
+                           float kp, float kd,
                            float tau_nm, float tau_abs_limit_nm)
 {
     CAN_Frame f = {0};
@@ -88,12 +97,14 @@ CAN_Frame BA2_BuildPdFrame(uint32_t id, float pos_rad, float kp, float kd,
     f.bit_rate_switch = false;
     f.data_len = BA2_SYS_FRAME_LEN;
     const uint16_t pos_raw = BA2_EncodePosDes(pos_rad);
+    const uint16_t velocity_raw = BA2_EncodeVelDes(velocity_rad_s);
     const uint16_t kp_raw = BA2_EncodeGainX100(kp);
     const uint16_t kd_raw = BA2_EncodeGainX100(kd);
     f.data[0] = 0U;
     f.data[1] = (uint8_t)(pos_raw >> 8);
     f.data[2] = (uint8_t)(pos_raw & 0xFFU);
-    f.data[3] = 0x7FU;  f.data[4] = 0xFEU;
+    f.data[3] = (uint8_t)(velocity_raw >> 8);
+    f.data[4] = (uint8_t)(velocity_raw & 0xFFU);
     f.data[5] = (uint8_t)(kp_raw >> 8);
     f.data[6] = (uint8_t)(kp_raw & 0xFFU);
     f.data[7] = (uint8_t)(kd_raw >> 8);

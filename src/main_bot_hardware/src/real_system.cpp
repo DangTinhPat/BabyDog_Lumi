@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 #include <rclcpp/logging.hpp>
 
@@ -11,6 +12,7 @@ namespace main_bot_hardware
 namespace
 {
 rclcpp::Logger Logger() { return rclcpp::get_logger("main_bot_hardware"); }
+constexpr double kTauFfAbsLimitNm = 10.0;
 
 // Kep + kiem tra NaN/inf TRUOC khi ep kieu sang int16_t/uint16_t - ep kieu 1 double
 // vuot pham vi bieu dien (hoac NaN) sang kieu nguyen la undefined behavior trong
@@ -66,12 +68,14 @@ std::vector<hardware_interface::StateInterface> RealSystem::export_state_interfa
 std::vector<hardware_interface::CommandInterface> RealSystem::export_command_interfaces()
 {
   std::vector<hardware_interface::CommandInterface> interfaces;
-  interfaces.reserve(kJointCount * 3U);
+  interfaces.reserve(kJointCount * 5U);
   for (uint32_t i = 0; i < kJointCount; i++)
   {
     interfaces.emplace_back(info_.joints[i].name, "position", &position_command_[i]);
+    interfaces.emplace_back(info_.joints[i].name, "velocity", &velocity_command_[i]);
     interfaces.emplace_back(info_.joints[i].name, "kp", &kp_command_[i]);
     interfaces.emplace_back(info_.joints[i].name, "kd", &kd_command_[i]);
+    interfaces.emplace_back(info_.joints[i].name, "effort", &effort_command_[i]);
   }
   return interfaces;
 }
@@ -86,12 +90,22 @@ void RealSystem::JointFbCallback(const main_bot_hardware_msgs::msg::JointFb & ms
 hardware_interface::CallbackReturn RealSystem::on_configure(
   const rclcpp_lifecycle::State & /*previous_state*/)
 {
-  position_state_.fill(0.0);
-  velocity_state_.fill(0.0);
+  // NaN co chu dich: truoc /joint_fb dau tien KHONG duoc gia mao q=qd=0 la
+  // feedback that. StateHoldPose kiem tra isfinite() va giu Kp/Tff=0 cho toi
+  // khi MCU da tra encoder hop le.
+  position_state_.fill(std::numeric_limits<double>::quiet_NaN());
+  velocity_state_.fill(std::numeric_limits<double>::quiet_NaN());
   effort_state_.fill(0.0);
   position_command_.fill(0.0);
+  velocity_command_.fill(0.0);
   kp_command_.fill(0.0);
   kd_command_.fill(0.0);
+  effort_command_.fill(0.0);
+  {
+    std::lock_guard<std::mutex> lock(joint_fb_mutex_);
+    has_joint_fb_ = false;
+    latest_joint_fb_ = main_bot_hardware_msgs::msg::JointFb{};
+  }
 
   // get_node(): rclcpp::Node do chinh hardware_interface framework tao + spin cho moi
   // hardware component (xem real_system.hpp) - khong tu quan ly executor/thread rieng.
@@ -137,11 +151,14 @@ hardware_interface::return_type RealSystem::write(
   for (uint32_t i = 0; i < kJointCount; i++)
   {
     cmd.target_angle_mrad[i] = ToInt16Safe(position_command_[i] * 1000.0);
+    cmd.target_velocity_mrad_s[i] = ToInt16Safe(velocity_command_[i] * 1000.0);
+    cmd.kp_x100[i] = ToUint16Safe(kp_command_[i] * 100.0);
+    cmd.kd_x100[i] = ToUint16Safe(kd_command_[i] * 100.0);
+    const double tau_ff_nm = std::isfinite(effort_command_[i])
+      ? std::clamp(effort_command_[i], -kTauFfAbsLimitNm, kTauFfAbsLimitNm)
+      : 0.0;
+    cmd.tau_ff_mnm[i] = ToInt16Safe(tau_ff_nm * 1000.0);
   }
-  // kp/kd dung chung cho ca 12 khop - stand_sit_controller hien luon ghi cung 1 gia tri
-  // stand_kp/sit_kp vao moi khop, lay khop[0] lam dai dien.
-  cmd.kp_x100 = ToUint16Safe(kp_command_[0] * 100.0);
-  cmd.kd_x100 = ToUint16Safe(kd_command_[0] * 100.0);
   cmd.seq = seq_++;
 
   joint_cmd_pub_->publish(cmd);

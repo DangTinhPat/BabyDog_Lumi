@@ -27,11 +27,9 @@
        theo target Stand trong tuong lai. effort la command_interface cho
        hardware_target=gazebo only - it's what leg_pd_controller (the
        low-level layer of the vendored gait stack) actually claims;
-       hardware_target=real exports position/kp/kd instead (matches
-       main_bot_hardware/RealSystem::export_command_interfaces() - RealSystem
-       has NO effort command_interface, declaring one unconditionally here
-       caused controller_manager to reject the hardware with "missing command
-       interfaces: .../effort" on every real bring-up attempt). -->
+       hardware_target=real exports position/velocity/kp/kd/effort instead (matches
+       main_bot_hardware/RealSystem::export_command_interfaces()). "effort" tren real la Tff
+       trong cung khung PD, khong phai effort-only mode. -->
   <ros2_control name="GazeboSimSystem" type="system">
     <hardware>
       <xacro:if value="${hardware_target == 'gazebo'}">
@@ -46,7 +44,9 @@
         <command_interface name="effort"><param name="initial_value">0.0</param></command_interface>
       </xacro:if>
       <xacro:if value="${hardware_target == 'real'}">
+        <command_interface name="effort"><param name="initial_value">0.0</param></command_interface>
         <command_interface name="position"><param name="initial_value">0.0</param></command_interface>
+        <command_interface name="velocity"><param name="initial_value">0.0</param></command_interface>
         <command_interface name="kp"><param name="initial_value">0.0</param></command_interface>
         <command_interface name="kd"><param name="initial_value">0.0</param></command_interface>
       </xacro:if>
@@ -59,7 +59,9 @@
         <command_interface name="effort"><param name="initial_value">0.0</param></command_interface>
       </xacro:if>
       <xacro:if value="${hardware_target == 'real'}">
+        <command_interface name="effort"><param name="initial_value">0.0</param></command_interface>
         <command_interface name="position"><param name="initial_value">0.0</param></command_interface>
+        <command_interface name="velocity"><param name="initial_value">0.0</param></command_interface>
         <command_interface name="kp"><param name="initial_value">0.0</param></command_interface>
         <command_interface name="kd"><param name="initial_value">0.0</param></command_interface>
       </xacro:if>
@@ -72,7 +74,9 @@
         <command_interface name="effort"><param name="initial_value">0.0</param></command_interface>
       </xacro:if>
       <xacro:if value="${hardware_target == 'real'}">
+        <command_interface name="effort"><param name="initial_value">0.0</param></command_interface>
         <command_interface name="position"><param name="initial_value">0.0</param></command_interface>
+        <command_interface name="velocity"><param name="initial_value">0.0</param></command_interface>
         <command_interface name="kp"><param name="initial_value">0.0</param></command_interface>
         <command_interface name="kd"><param name="initial_value">0.0</param></command_interface>
       </xacro:if>
@@ -85,7 +89,9 @@
         <command_interface name="effort"><param name="initial_value">0.0</param></command_interface>
       </xacro:if>
       <xacro:if value="${hardware_target == 'real'}">
+        <command_interface name="effort"><param name="initial_value">0.0</param></command_interface>
         <command_interface name="position"><param name="initial_value">0.0</param></command_interface>
+        <command_interface name="velocity"><param name="initial_value">0.0</param></command_interface>
         <command_interface name="kp"><param name="initial_value">0.0</param></command_interface>
         <command_interface name="kd"><param name="initial_value">0.0</param></command_interface>
       </xacro:if>
@@ -98,7 +104,9 @@
         <command_interface name="effort"><param name="initial_value">0.0</param></command_interface>
       </xacro:if>
       <xacro:if value="${hardware_target == 'real'}">
+        <command_interface name="effort"><param name="initial_value">0.0</param></command_interface>
         <command_interface name="position"><param name="initial_value">0.0</param></command_interface>
+        <command_interface name="velocity"><param name="initial_value">0.0</param></command_interface>
         <command_interface name="kp"><param name="initial_value">0.0</param></command_interface>
         <command_interface name="kd"><param name="initial_value">0.0</param></command_interface>
       </xacro:if>
@@ -111,7 +119,9 @@
         <command_interface name="effort"><param name="initial_value">0.0</param></command_interface>
       </xacro:if>
       <xacro:if value="${hardware_target == 'real'}">
+        <command_interface name="effort"><param name="initial_value">0.0</param></command_interface>
         <command_interface name="position"><param name="initial_value">0.0</param></command_interface>
+        <command_interface name="velocity"><param name="initial_value">0.0</param></command_interface>
         <command_interface name="kp"><param name="initial_value">0.0</param></command_interface>
         <command_interface name="kd"><param name="initial_value">0.0</param></command_interface>
       </xacro:if>
@@ -124,7 +134,9 @@
         <command_interface name="effort"><param name="initial_value">0.0</param></command_interface>
       </xacro:if>
       <xacro:if value="${hardware_target == 'real'}">
+        <command_interface name="effort"><param name="initial_value">0.0</param></command_interface>
         <command_interface name="position"><param name="initial_value">0.0</param></command_interface>
+        <command_interface name="velocity"><param name="initial_value">0.0</param></command_interface>
         <command_interface name="kp"><param name="initial_value">0.0</param></command_interface>
         <command_interface name="kd"><param name="initial_value">0.0</param></command_interface>
       </xacro:if>
@@ -137,7 +149,9 @@
         <command_interface name="effort"><param name="initial_value">0.0</param></command_interface>
       </xacro:if>
       <xacro:if value="${hardware_target == 'real'}">
+        <command_interface name="effort"><param name="initial_value">0.0</param></command_interface>
         <command_interface name="position"><param name="initial_value">0.0</param></command_interface>
+        <command_interface name="velocity"><param name="initial_value">0.0</param></command_interface>
         <command_interface name="kp"><param name="initial_value">0.0</param></command_interface>
         <command_interface name="kd"><param name="initial_value">0.0</param></command_interface>
       </xacro:if>
@@ -150,7 +164,9 @@
         <command_interface name="effort"><param name="initial_value">0.0</param></command_interface>
       </xacro:if>
       <xacro:if value="${hardware_target == 'real'}">
+        <command_interface name="effort"><param name="initial_value">0.0</param></command_interface>
         <command_interface name="position"><param name="initial_value">0.0</param></command_interface>
+        <command_interface name="velocity"><param name="initial_value">0.0</param></command_interface>
         <command_interface name="kp"><param name="initial_value">0.0</param></command_interface>
         <command_interface name="kd"><param name="initial_value">0.0</param></command_interface>
       </xacro:if>
@@ -163,7 +179,9 @@
         <command_interface name="effort"><param name="initial_value">0.0</param></command_interface>
       </xacro:if>
       <xacro:if value="${hardware_target == 'real'}">
+        <command_interface name="effort"><param name="initial_value">0.0</param></command_interface>
         <command_interface name="position"><param name="initial_value">0.0</param></command_interface>
+        <command_interface name="velocity"><param name="initial_value">0.0</param></command_interface>
         <command_interface name="kp"><param name="initial_value">0.0</param></command_interface>
         <command_interface name="kd"><param name="initial_value">0.0</param></command_interface>
       </xacro:if>
@@ -176,7 +194,9 @@
         <command_interface name="effort"><param name="initial_value">0.0</param></command_interface>
       </xacro:if>
       <xacro:if value="${hardware_target == 'real'}">
+        <command_interface name="effort"><param name="initial_value">0.0</param></command_interface>
         <command_interface name="position"><param name="initial_value">0.0</param></command_interface>
+        <command_interface name="velocity"><param name="initial_value">0.0</param></command_interface>
         <command_interface name="kp"><param name="initial_value">0.0</param></command_interface>
         <command_interface name="kd"><param name="initial_value">0.0</param></command_interface>
       </xacro:if>
@@ -189,7 +209,9 @@
         <command_interface name="effort"><param name="initial_value">0.0</param></command_interface>
       </xacro:if>
       <xacro:if value="${hardware_target == 'real'}">
+        <command_interface name="effort"><param name="initial_value">0.0</param></command_interface>
         <command_interface name="position"><param name="initial_value">0.0</param></command_interface>
+        <command_interface name="velocity"><param name="initial_value">0.0</param></command_interface>
         <command_interface name="kp"><param name="initial_value">0.0</param></command_interface>
         <command_interface name="kd"><param name="initial_value">0.0</param></command_interface>
       </xacro:if>
@@ -197,10 +219,9 @@
       <state_interface name="velocity"/>
       <state_interface name="effort"/>
     </joint>
-    <!-- No imu_sensor <sensor> block here (yet) - the real robot has no IMU
-         wired to the STM32 yet, so the sim intentionally matches that instead
-         of reading a sensor the real controller can't use. See sensors/imu.xacro
-         and the note at the top of babydog.xacro for how to re-add it later. -->
+    <!-- IMU deliberately is not a ros2_control state interface. Both branches
+         publish sensor data through imu_kalman_filter on /imu/data, keeping the
+         real MPU6050 and Gazebo path identical above their raw transports. -->
   </ros2_control>
 
   <!-- Chi Gazebo doc block nay (moi hardware khac im lang bo qua the <gazebo> khong

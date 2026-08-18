@@ -5,15 +5,16 @@ find_package(ament_cmake REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
-        "msg/JointCmd.msg"
-        "msg/JointFb.msg"
+  "msg/ImuRaw.msg"
+  "msg/JointCmd.msg"
+  "msg/JointFb.msg"
 )
 
 ament_export_dependencies(rosidl_default_runtime)
 
-if (BUILD_TESTING)
+if(BUILD_TESTING)
     find_package(ament_lint_auto REQUIRED)
     ament_lint_auto_find_test_dependencies()
-endif ()
+endif()
 
 ament_package()

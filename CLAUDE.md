@@ -5,10 +5,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Project
 
 `babyDog`: a real 4-legged robot (RDK X5/laptop + STM32H7 MCU), current scope is **Stand/Sit only**
-(no gait/walking, no IMU yet), controlled via joystick/keyboard. Includes both a Gazebo simulation
+(no gait/walking or active balance yet), controlled via joystick/keyboard. It has an MPU6050 data
+path with EC-side Kalman filtering, plus both a Gazebo simulation
 (ROS 2 Jazzy + Gazebo Harmonic) and the real-hardware stack. It's a deliberately trimmed-down fork
 of `../superDog` (full walking-gait project) — reuses the physical description + `leg_pd_controller`
-but drops gait/balance/IMU since this phase doesn't need them.
+but drops the full gait/balance estimator since this phase doesn't need it.
 
 ## Roadmap
 
@@ -17,8 +18,9 @@ the missing pieces below as bugs or gaps to fill unprompted; they're intentional
 now.
 
 - **Phase 1 (current)** — basic system so the robot can stand up / sit down, and move with a basic
-  gait (simple, not yet optimized). No IMU, no active balance.
-- **Phase 2 (planned)** — add IMU, active/dynamic balance while moving.
+  gait (simple, not yet optimized). MPU6050 sensing/filtering has landed early, but does not alter
+  motor commands.
+- **Phase 2 (planned)** — use the filtered IMU for active/dynamic balance while moving.
 - **Phase 3 (planned)** — add reinforcement learning.
 
 The current FSM (`Passive`/`HoldPose` only, no `Estimator`/`BalanceCtrl` QP/gait generator — compare
@@ -47,6 +49,8 @@ of truth for these rules; `NOTE.md` §4 points back here instead of duplicating 
   the OLD firmware — a classic "I fixed the code but it's still broken" trap.
 - **Before changing any calibration/limit value** (kp/kd, the limit table, stand/sit pose), read
   "Critical invariants" below first — this exact class of bug has recurred multiple times.
+- **Do not enable IMU-to-motor correction before verifying all three physical axes/signs.** A wrong
+  roll/pitch sign turns negative feedback into positive feedback. The current IMU path is sensing-only.
 
 ## Commands
 
@@ -58,7 +62,7 @@ workspaces by hand — every ROS2 target auto-sources `/opt/ros/jazzy/setup.bash
 make build              # colcon build --symlink-install (whole ROS2 workspace)
 make sim                # Gazebo + RViz + controllers (simulation)
 make sim-no-rviz        # same, no RViz
-make gui                # Tkinter control panel (start/stop sim+rviz, Stand/Sit/Estop, logs)
+make gui                # Tk control panel: sim/real/FSM plus isolated IMU-only monitor row
 make keyboard           # keyboard teleop: '1'=stand '2'=sit '0'=estop
 make joystick           # real joystick/gamepad -> /control_input
 make stand / sit / estop  # one-shot CLI command, no joystick needed
@@ -67,7 +71,10 @@ make kill               # kill stray Gazebo processes
 
 make real                # real hardware + RViz (requires firmware flashed, micro_ros_agent workspace sourced)
 make real-no-rviz        # same, no RViz (e.g. over SSH)
+make imu-test            # real IMU only: agent + Kalman + raw/filtered monitor, no ros2_control
+make imu-monitor         # monitor an already-running IMU pipeline (read-only)
 
+make microros-lib         # regenerate MCU type-support after JointCmd/JointFb/ImuRaw changes
 make firmware            # build firmware/stm32h7 (needs arm-none-eabi-gcc in PATH)
 make firmware-flash      # build + flash via ST-Link (st-flash --reset write)
 make firmware-clean
@@ -76,8 +83,8 @@ make clean                # rm -rf build install log
 ```
 
 To build/test a single ROS2 package: `colcon build --packages-select <pkg>` (source
-`/opt/ros/jazzy/setup.bash` first). There is no automated test suite in this repo — "testing" so far
-means running `make sim` and observing behavior, or (for firmware) flashing to real hardware.
+`/opt/ros/jazzy/setup.bash` first). `imu_kalman_filter` has synthetic gtests; the existing motion
+stack still relies on simulation observation and proportionate real-hardware testing.
 
 Firmware alone, without the Make wrapper:
 ```bash
@@ -115,6 +122,10 @@ Both branches (sim/real) share the same `controller` package FSM. On real hardwa
 runs FK/IK and sends joint angles down to the STM32; the firmware itself has no FSM or built-in
 Stand/Sit pose — it's a dumb relay + watchdog.
 
+The sensing path is separate from actuation: real `MPU6050 -> STM32 /imu/raw` and simulated
+`Gazebo -> /imu/sim_raw` both enter `imu_kalman_filter` on the EC and publish standard `/imu/data`.
+The Stand/Sit controller does not consume this topic for motor correction yet.
+
 ## Data flow: input to actuation
 
 The diagram above shows boxes; this is the step-by-step sequence a button press actually travels
@@ -125,42 +136,65 @@ joint targets get to the motors.
 1. `joystick_bridge` (`joystick_input.py`/`keyboard_input.py`) reads `/joy` or keyboard → publishes `/control_input` (`controller/msg/Inputs{command}`).
 2. `StandSitController::update()` (runs every ros2_control cycle) reads `/control_input` → FSM picks a state (`StatePassive`/`StateHoldPose`, the latter shared by both Stand and Sit).
 3. `StateHoldPose::run()`: tanh-interpolates the target foot position in Cartesian space → `solveFootIK()` (`RobotLeg::calcQPosition`, KDL LMA solver) → per-cycle joint angle targets.
-4. Writes joint angles + kp/kd (and `effort` if settled and `tau_ff_scale>0`) into ros2_control command interfaces (`joint_position_command_interface_` etc., see `CtrlInterfaces.h`).
+4. Writes joint angles, joint velocities derived from consecutive valid IK solutions (`qd_des=(q_des[k]-q_des[k-1])/period`), and kp/kd into ros2_control command interfaces. During Stand it also ramps static load feedforward `effort = -scale * J(q_measured)^T * F_support`; during Sit it ramps that term back to zero.
 5. `leg_pd_controller::update()` reads those interfaces + current state → computes `tau = effort_ff + kp*(q_des-q) + kd*(qd_des-qd)` → writes the `effort` interface `gz_ros2_control` exports to Gazebo.
 6. Gazebo applies this torque to the 12 physical joints in sim.
 7. `joint_state_broadcaster` reads joint state from Gazebo → publishes `/joint_states` → drives RViz (via `robot_state_publisher`/TF) and feeds back as the state interface input to the next `update()` cycle (FK "current position" for IK).
 
 **REAL branch** (button press → real motor turns):
-1-4. Same as SIM steps 1-4 — `controller` shares 100% of its FSM/IK code across both branches; they only diverge in how the resulting joint angles get consumed. On real, `effort` is never written (the interface doesn't exist in `controllers_real.yaml`, so Tff is automatically inert).
-5. `main_bot_hardware::RealSystem::write()` reads the position/kp/kd command interfaces → packs `JointCmd{target_angle_mrad, kp_x100, kd_x100, seq}` → publishes `/joint_cmd` over micro-ROS.
+1-4. Same as SIM steps 1-4 — `controller` shares 100% of its FSM/IK/Tff code across both branches. Real hardware exposes `effort` as the per-joint BabyAlpha2 Tff field. Simulation uses `tau_ff_scale=1.0`; the current real-hardware tuning value lives in `controllers_real.yaml`, with a 1.0 s ramp and a controller-frame sign of `-J^T*F` confirmed by a zero-Tff real baseline.
+5. `main_bot_hardware::RealSystem::write()` reads 12 independent position/velocity/kp/kd/effort command interfaces, independently clamps Tff to ±10 N·m, packs fixed arrays in `JointCmd{target_angle_mrad[12], target_velocity_mrad_s[12], kp_x100[12], kd_x100[12], tau_ff_mnm[12], seq}`, then publishes `/joint_cmd` over micro-ROS. `effort` is BabyAlpha2 feedforward torque in the same PD frame, not effort-only mode.
 6. `micro_ros_agent` (running on the PC/RDK) forwards this DDS message over UART1 serial to the STM32H7.
-7. STM32 (`microros_bridge.c`): `JointCmdCallback()` (rclc executor callback on new data) decodes mrad→rad, kp_x100/kd_x100→float → calls `Actuator_SetTarget(angles_rad, kp, kd)`.
-8. `actuator_if.c`: stores the target; `LogicalToRaw()` converts the 12 angles from LOGIC to RAW space (per-leg sign flip via `MOTOR_JOINT_SIGN`, adds `g_home_offset_rad`) — see Critical invariants.
-9. The main loop (`main.c`) periodically calls `baby_alpha2_protocol.c`'s `BA2_BuildPdFrame()` to pack a 12-byte CAN-FD frame (target/kp/kd, `v_des` hardcoded ~0) and sends it via `can.c` on the correct bus (`CAN_INSTANCE_1`/`_2` per `motor_topology.h`).
-10. The BabyAlpha2 joint driver board receives the frame and runs its own local PD loop (`pwm = kp*(target-measured) + kd*(0-measured_velocity)`) driving the motor and reading its encoder.
+7. STM32 (`microros_bridge.c`): `JointCmdCallback()` decodes all five 12-element arrays to SI units → calls `Actuator_SetTarget(angles, velocities, kp, kd, tau_ff)`.
+8. `actuator_if.c` clamps each joint independently. `LogicalToRaw()` converts position with per-leg sign + home offset; velocity and Tff apply the same sign but never a position offset — see Critical invariants.
+9. `baby_alpha2_protocol.c` packs a 12-byte CAN-FD PD frame containing target/v_des/kp/kd/Tff and sends it on the correct bus. `v_des` is offset-binary over ±45 rad/s (`0x8000` = zero); the operational clamp is 5 rad/s/joint on both EC and MCU.
+10. The BabyAlpha2 joint driver board receives the frame and runs its own local PD loop (`pwm = kp*(target-measured) + kd*(v_des-measured_velocity) + tau_ff`) driving the motor and reading its encoder.
 11. The driver board sends a telemetry frame (measured position/velocity) back — STM32 receives it over CAN, decodes with `RawToLogical()` (RAW→LOGIC).
 12. `microros_bridge.c`'s `MicroRosBridge_PublishJointFb()` periodically publishes `/joint_fb` (`measured_angle_mrad`, `measured_velocity_mrad_s` × 12) back up over micro-ROS/UART.
-13. `RealSystem` receives `/joint_fb` → writes it into the state interfaces → feeds `joint_state_broadcaster` (→ `/joint_states` → RViz TF) and becomes the FK input for the next `update()` cycle.
+13. `RealSystem` receives `/joint_fb` → writes it into the state interfaces → feeds `joint_state_broadcaster` (→ `/joint_states` → RViz TF) and becomes the FK input for the next `update()` cycle. Before the first real feedback packet, position/velocity remain NaN deliberately so Stand/Sit holds Kp/Tff at zero instead of treating an invented all-zero pose as valid feedback.
 
 **Safety note**: if `/joint_cmd` stops arriving (firmware watchdog timeout), the MCU cuts torque
 rather than holding the last command — this is why a lost connection on real hardware fails soft
 instead of leaving the robot frozen under load.
 
-## Message contract (`/joint_cmd`/`/joint_fb`)
+## IMU data flow
 
-- `/joint_cmd` (ROS2 -> MCU): `JointCmd{ int16[12] target_angle_mrad; uint16 kp_x100; uint16 kd_x100; uint8 seq }` — one shared kp/kd pair for all 12 joints (architectural constraint, not per-joint).
+**REAL:** J4 supplies the MPU6050 on I2C1 (`PB8=SCL`, `PB7=SDA`, address `0x68`). Firmware verifies
+`WHO_AM_I`, configures ±2g/±250°/s, DLPF and 100 Hz sampling, then publishes fixed-size `ImuRaw` on
+`/imu/raw`. Missing/read-failed IMU status is reported without blocking CAN, joint watchdog, or FSM.
+
+**SIM:** the native Gazebo IMU on `imu_link` publishes noisy `sensor_msgs/Imu` on `/imu/sim_raw` at
+100 Hz. `ros_gz_bridge` forwards it to ROS.
+
+For both inputs, EC package `imu_kalman_filter` applies configurable axis permutation/sign, requires
+200 consecutive stationary samples for gyro-bias calibration, runs roll/pitch angle+bias Kalman
+filters with adaptive accelerometer covariance, and scalar Kalman filters on published accel/gyro.
+It outputs `/imu/data` plus `/diagnostics`. Yaw is gyro-integrated only and carries high covariance
+because MPU6050 has no magnetometer.
+
+For sensor-only bring-up, `make imu-test` runs a dedicated launch containing only the
+`micro_ros_agent`, Kalman node and read-only Tk monitor. Its preflight script rejects an occupied
+serial device or an already-running real agent/controller; it never starts `ros2_control` and the
+monitor creates no motor/control publishers.
+
+## Message contract (`/joint_cmd`/`/joint_fb`/`/imu/raw`)
+
+- `/joint_cmd` (ROS2 -> MCU): `JointCmd{ int16[12] target_angle_mrad; int16[12] target_velocity_mrad_s; uint16[12] kp_x100; uint16[12] kd_x100; int16[12] tau_ff_mnm; uint8 seq }`. Every actuator has independent velocity/gains/Tff. Tff is zero in Passive/ESTOP, ramps up during Stand, and ramps down during Sit; EC and MCU both clamp it per joint.
 - `/joint_fb` (MCU -> ROS2): `JointFb{ int16[12] measured_angle_mrad; int16[12] measured_velocity_mrad_s }`.
-- There is no `vel_des` field anywhere in this pipeline even though the BabyAlpha2 CAN-FD protocol supports it — firmware always encodes velocity desired as ~0. Known gap, not yet implemented.
+- `/imu/raw` (MCU -> ROS2): `ImuRaw{int16[3] linear_acceleration_milli_ms2; int16[3]
+  angular_velocity_mrad_s; uint32 stamp_ms; uint8 status}`. The MCU timestamp is delta-time only;
+  the EC assigns ROS time to `/imu/data`.
+- `target_velocity_mrad_s` comes from consecutive valid IK commands divided by the actual controller period. It resets to zero on state entry/exit, Passive/ESTOP, IK failure, invalid period, and firmware watchdog/disable.
 
 ## Critical invariants
 
-Three things that, if violated, reproduce real bugs that have already happened in this repo.
+Four things that, if violated, can reproduce real bugs or unsafe feedback in this repo.
 
 ### The "LOGIC vs RAW" joint-space split
 
 - **LOGIC space**: the joint angle as ROS2/URDF understands it — the *same* number means the same physical pose across all 4 legs, because axis mirroring is already baked into the URDF per leg.
 - **RAW space**: what's actually sent to the motor. Motors are mirrored per leg, so the *same* physical motion needs an opposite-sign RAW command depending on which leg (`MOTOR_JOINT_SIGN[LegGroup_t][JointType_t]` in `motor_calib.c`).
-- Conversion happens in exactly one place: `LogicalToRaw()`/`RawToLogical()` in `firmware/stm32h7/app/src/actuator_if.c`. Everything else (limits, home offset, targets) operates purely in LOGIC space.
+- Conversion happens in exactly one place: `LogicalToRaw()`/`RawToLogical()`, `LogicalVelocityToRaw()`, and `LogicalTorqueToRaw()` in `firmware/stm32h7/app/src/actuator_if.c`. Position uses sign + home offset; velocity/torque use sign only. Everything else operates in LOGIC space.
 
 ### "home = 0" calibration (the single most load-bearing invariant in this repo)
 
@@ -189,6 +223,13 @@ which physically exceeds Classic CAN's 8-byte max). `motor_topology.h` (renamed 
 `motor_protocol.h`) only holds joint-index/bus/CAN-ID topology lookups, not wire encoding — the
 actual frame encode/decode lives in `baby_alpha2_protocol.h/.c`.
 
+### IMU axes are not motor signs
+
+Raw MPU6050 axes are mapped once on the EC by `axis_map`/`axis_sign` in `imu_filter.yaml` into
+`imu_link` (`x` forward, `y` left, `z` up). Never reuse `MOTOR_JOINT_SIGN` or change firmware sensor
+signs to compensate for mounting. Identity is only a safe placeholder until the secured physical
+axis test in `GUIDE.md` passes; active balance must stay disabled until then.
+
 ## Directory tree and file roles
 
 ```
@@ -198,7 +239,7 @@ src/
 │   ├── msg/Inputs.msg                     command: uint8 (0 None/1 Stand/2 Sit/9 Estop)
 │   ├── include/controller/
 │   │   ├── StandSitController.h             Main controller class (ros2_control ChainableControllerInterface)
-│   │   ├── CtrlInterfaces.h                  Wraps the command/state interfaces (position/kp/kd/torque...)
+│   │   ├── CtrlInterfaces.h                  Wraps the command/state interfaces (position/velocity/kp/kd/torque...)
 │   │   ├── common/mathTypes.h                Shared Eigen type aliases (Vec3, Mat3...), ported unchanged from superDog
 │   │   ├── common/enumClass.h                Command constants (matches Inputs.msg), FSM state enum
 │   │   ├── FSM/FSMState.h                    Abstract base for one FSM state (enter/run/exit)
@@ -214,31 +255,38 @@ src/
 │       └── keyboard_input.py                 Reads terminal keyboard ('1'/'2'/'0') -> Inputs.command
 ├── main_bot_hardware/                     ros2_control <-> real firmware bridge
 │   ├── main_bot_hardware.xml                 SystemInterface plugin declaration
-│   └── src/real_system.cpp                   RealSystem: exports state/command interfaces, publishes
+│   └── src/real_system.cpp                   RealSystem: exports state/position+per-joint kp/kd/Tff commands, publishes
 │                                              /joint_cmd, subscribes /joint_fb over micro-ROS
 ├── main_bot_hardware_msgs/                Shared ROS2 <-> firmware message definitions
-│   └── msg/JointCmd.msg, msg/JointFb.msg     See "Message contract" above
+│   └── msg/JointCmd.msg, JointFb.msg, ImuRaw.msg   See "Message contract" above
+├── imu_kalman_filter/                    EC-side MPU6050/sim filtering
+│   ├── src/imu_kalman.cpp                  testable angle+bias + scalar Kalman core
+│   ├── src/imu_kalman_node.cpp             raw input, calibration, /imu/data + diagnostics
+│   └── test/test_imu_kalman.cpp             synthetic bias/tilt/noise/dt tests
 ├── main_bot/                              Robot description + world + launch + config (no C++/Python logic)
 │   ├── description/
 │   │   ├── robot.urdf.xacro                   The REAL xacro entry point (what launch files process,
-│   │   │                                       NOT babydog.xacro directly) — doesn't include
-│   │   │                                       sensors/*.xacro yet since the real robot has no IMU/camera
+│   │   │                                       NOT babydog.xacro directly) — includes Gazebo IMU
 │   │   ├── babydog.xacro                       Physical structure (link/joint/inertial), has the
 │   │   │                                       calibrated "home=0" origin — see Critical invariants
 │   │   ├── babydog.ros2_control.xacro           Declares ros2_control state/command interfaces (12 joints)
-│   │   └── sensors/imu.xacro                    IMU sensor for Gazebo — WRITTEN but NOT YET included
-│   │                                            into robot.urdf.xacro (prepped for Roadmap Phase 2)
+│   │   └── sensors/imu.xacro                    100 Hz noisy Gazebo counterpart of MPU6050
 │   ├── config/
 │   │   ├── controllers.yaml                    controller_manager config for SIM (has the "effort"
 │   │   │                                       command interface — the Tff path, see Critical invariants)
-│   │   ├── controllers_real.yaml                controller_manager config for REAL (no "effort")
-│   │   └── gz_bridge.yaml                       ros_gz_bridge topic list for sim — no /imu yet
+│   │   ├── controllers_real.yaml                controller_manager config for REAL (PD + Tff interfaces)
+│   │   ├── gz_bridge.yaml                       bridges /clock + /imu/sim_raw
+│   │   └── imu_filter.yaml                      mapping, calibration and Kalman parameters
 │   ├── launch/
 │   │   ├── sim.launch.py                        Gazebo + RViz + controllers (simulation)
 │   │   ├── real_ros2_control.launch.py           Full real-hardware stack (forces ROS_DOMAIN_ID=0)
 │   │   ├── rz_sim.launch.py, rz_real.launch.py    RViz-only (doesn't reload the whole stack)
 │   └── scripts/kill_gz.sh                       Cleans up stray Gazebo processes (used by `make kill`)
-├── gui/gui/main_window.py                 Tkinter control panel (start/stop sim, Stand/Sit/Estop, logs)
+├── gui/                                  Tkinter tools
+│   ├── gui/main_window.py                  sim/real/FSM + mutually-exclusive IMU-only launcher
+│   ├── gui/imu_monitor.py                  read-only /imu/raw + /imu/data + diagnostics display
+│   ├── launch/imu_real_test.launch.py      agent + Kalman + monitor only; no ros2_control
+│   └── scripts/imu_real_test.sh            serial/process preflight + domain/workspace setup
 
 firmware/stm32h7/
 ├── main.c                                 Main loop — wires tick/CAN/micro-ROS/actuator together
@@ -249,7 +297,8 @@ firmware/stm32h7/
 │   ├── actuator_if.h/.c                     LogicalToRaw/RawToLogical (the ONE place space conversion
 │   │                                        happens), adaptive home offset, sends commands + reads CAN feedback
 │   ├── baby_alpha2_protocol.h/.c             Real 12-byte CAN-FD frame encode/decode per vendor spec
-│   ├── microros_bridge.h/.c                   micro-ROS node (`stm32_joint_node`), sub /joint_cmd, pub /joint_fb
+│   ├── microros_bridge.h/.c                   micro-ROS node, sub /joint_cmd, pub /joint_fb + /imu/raw
+│   ├── app_i2c.h/.c, mpu6050.h/.c             app-local I2C1 + 100 Hz MPU6050 acquisition
 │   ├── microros_transport.h/.c                UART1 transport layer for micro-ROS (ISR-driven RX ring)
 │   ├── microros_time.c                        clock_gettime() for rcutils, backed by Tick_GetMs() (no FreeRTOS)
 │   └── tick.h/.c                              Free-running millisecond counter (TIM2), replaces lib/systick.h (blocking)

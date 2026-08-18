@@ -193,6 +193,10 @@ std::vector<KDL::Vector> QuadrupedRobot::getFeet2BVelocities() const {
     return result;
 }
 
+bool QuadrupedRobot::clampLegToLimits(const int index, KDL::JntArray &q) const {
+    return robot_legs_[index]->clampToLimits(q);
+}
+
 void QuadrupedRobot::update() {
     if (mass_ == 0) return;
     for (int i = 0; i < 4; i++) {
@@ -204,9 +208,9 @@ void QuadrupedRobot::update() {
         // (xem controller/src/FSM/StateHoldPose.cpp) - FSM bi ket vinh vien vi
         // exception xay ra giua ham, khien dong lenh sau .value() (vd
         // mode_ = FSMMode::NORMAL o StandSitController::update()) khong bao gio
-        // chay toi. .value_or(0.0) o day AN TOAN vi tau_ff_scale_ mac dinh 0.0
-        // dam bao gia tri fallback sai nay khong bao gio duoc gui di truoc khi co
-        // feedback that (xem StateHoldPose::run()).
+        // chay toi. .value_or(0.0) o day AN TOAN vi StateHoldPose chi bat Kp/Tff
+        // sau khi doc du feedback huu han va FK/IK khoi tao thanh cong; fallback
+        // nay khong bao gio tu no tro thanh lenh gui xuong motor.
         KDL::JntArray pos_array(3);
         pos_array(0) = ctrl_interfaces_.joint_position_state_interface_[i * 3].get().get_optional().value_or(0.0);
         pos_array(1) = ctrl_interfaces_.joint_position_state_interface_[i * 3 + 1].get().get_optional().value_or(0.0);

@@ -3,7 +3,8 @@ with the stand up / sit down controller stack (leg_pd_controller +
 controller) active, and optionally an RViz view of the same live
 simulation alongside it.
 
-Trimmed from superDog's sim.launch.py: no imu_sensor_broadcaster (no IMU yet).
+Gazebo publishes noisy /imu/sim_raw data which passes through the same EC-side
+Kalman implementation as the real MPU6050 path.
 
 Does not command any pose itself - after the controllers activate, the robot
 sits in its default FSM state (passive, torque off) until driven via
@@ -57,6 +58,7 @@ def generate_launch_description():
         [pkg_main_bot, 'worlds', 'stand_sit_world.sdf']
     )
     rviz_config = PathJoinSubstitution([pkg_main_bot, 'rviz', 'babydog.rviz'])
+    imu_filter_yaml = os.path.join(pkg_main_bot, 'config', 'imu_filter.yaml')
 
     world = LaunchConfiguration('world')
     robot_name = LaunchConfiguration('robot_name')
@@ -140,6 +142,18 @@ def generate_launch_description():
         }],
     )
 
+    imu_filter = Node(
+        package='imu_kalman_filter',
+        executable='imu_kalman_node',
+        name='imu_kalman_filter',
+        output='screen',
+        parameters=[imu_filter_yaml, {
+            'input_source': 'sensor_msgs',
+            'sensor_topic': '/imu/sim_raw',
+            'use_sim_time': use_sim_time,
+        }],
+    )
+
     rviz_node = Node(
         package='rviz2',
         executable='rviz2',
@@ -211,6 +225,7 @@ def generate_launch_description():
         *unset_snap_vars,
         gz_sim,
         gz_bridge,
+        imu_filter,
         robot_state_publisher,
         rviz_node,
         spawn_robot,

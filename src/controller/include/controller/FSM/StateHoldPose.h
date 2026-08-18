@@ -16,12 +16,12 @@ class QuadrupedRobot;
 //
 // ESTOP can interrupt mid-interpolation (checked every cycle, immediately);
 // switching between STAND and SIT only takes effect once the current
-// interpolation has settled (percent_ >= 1.5), so a direction is never
+// interpolation has settled (percent_ >= 1.0), so a direction is never
 // reversed mid-motion.
 class StateHoldPose final : public FSMState
 {
 public:
-    // robot_model/tau_ff_scale/tau_ff_max_nm nhan qua THAM CHIEU (khong phai gia
+    // robot_model/cac tham so Tff nhan qua THAM CHIEU (khong phai gia
     // tri) toi cac thanh vien tuong ung cua StandSitController - vi robot_model
     // (con tro shared_ptr) co the con null luc StateHoldPose duoc tao (on_activate())
     // roi duoc gan sau, khi callback /robot_description chay (xem
@@ -31,12 +31,22 @@ public:
                   FSMStateName state_name,
                   const std::string& state_name_string,
                   const std::vector<double>& target_foot_positions,
-                  double kp,
-                  double kd,
+                  const std::vector<double>& kp,
+                  const std::vector<double>& kd,
+                  const std::vector<double>& velocity_max_rad_s,
                   double duration_seconds,
                   std::shared_ptr<QuadrupedRobot>& robot_model,
                   double& tau_ff_scale,
-                  double& tau_ff_max_nm);
+                  double& tau_ff_mass_kg,
+                  double& tau_ff_ramp_seconds,
+                  std::vector<double>& tau_ff_load_share,
+                  std::vector<double>& tau_ff_joint_scale,
+                  bool& tau_ff_diagnostics_enabled,
+                  double& tau_ff_diagnostics_start_seconds,
+                  double& tau_ff_diagnostics_period_seconds,
+                  std::vector<double>& joint_trim_rad,
+                  double& tau_ff_support_blend,
+                  std::vector<double>& tau_ff_max_nm);
 
     void enter() override;
 
@@ -49,21 +59,36 @@ public:
 
 private:
     bool initializeCartesianMotion(const std::shared_ptr<QuadrupedRobot>& robot_model);
+    void zeroOptionalVelocityCommand();
+    void zeroOptionalTorqueCommand();
 
     std::vector<KDL::Vector> target_foot_positions_;
     std::vector<KDL::Vector> start_foot_positions_;
     std::vector<KDL::JntArray> ik_seed_;
     bool motion_ready_ = false;
     bool ik_error_reported_ = false;
-
-    double kp_, kd_;
+    bool tff_ramp_reported_ = false;
+    bool tff_active_reported_ = false;
+    bool trim_limit_clamped_reported_ = false;
+    std::vector<double> kp_, kd_, velocity_max_rad_s_;
 
     double duration_ = 600; // steps
-    double percent_ = 0; // 0..1 (well past 1 via tanh saturation, see run())
+    double percent_ = 0; // 0..1 finite smoothstep progress; 1.0 = target latched
+    double tff_settled_seconds_ = 0.0;
+    double tff_diagnostics_elapsed_ = 0.0;
 
     std::shared_ptr<QuadrupedRobot>& robot_model_;
     double& tau_ff_scale_;
-    double& tau_ff_max_nm_;
+    double& tau_ff_mass_kg_;
+    double& tau_ff_ramp_seconds_;
+    std::vector<double>& tau_ff_load_share_;
+    std::vector<double>& tau_ff_joint_scale_;
+    bool& tau_ff_diagnostics_enabled_;
+    double& tau_ff_diagnostics_start_seconds_;
+    double& tau_ff_diagnostics_period_seconds_;
+    std::vector<double>& joint_trim_rad_;
+    double& tau_ff_support_blend_;
+    std::vector<double>& tau_ff_max_nm_;
 };
 
 #endif //CONTROLLER_STATEHOLDPOSE_H

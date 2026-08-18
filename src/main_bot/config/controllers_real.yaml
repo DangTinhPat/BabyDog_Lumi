@@ -2,15 +2,14 @@
 # (main_bot_hardware/RealSystem qua babydog.xacro hardware:=real), KHÔNG dùng cho
 # sim (xem controllers.yaml - file đó giữ nguyên không đổi). So khác với bản sim:
 #   - KHÔNG load leg_pd_controller: board driver mỗi khớp (firmware/stm32h7)
-#     đã tự làm PD cục bộ rồi (xem motor_protocol.h/actuator_if.c) - stand_sit_
+#     đã tự làm PD cục bộ rồi (xem baby_alpha2_protocol.h/actuator_if.c) - stand_sit_
 #     controller claim thẳng hardware qua command_prefix rỗng thay vì qua
 #     leg_pd_controller.
-#   - update_rate thấp hơn (200Hz) - khớp nhịp CAN FD thật (JOINT_CMD_CAN_ID/
-#     JOINT_FB_CAN_ID, protocol.h), không cần 1000Hz như sim (Gazebo không có
-#     giới hạn băng thông mạng thật).
-#   - command_interfaces: position/kp/kd (không có effort/velocity - robot thật
-#     không có driver nhận lệnh torque hay velocity trực tiếp, board mỗi khớp
-#     chỉ nhận target_angle+kp+kd, xem protocol.h).
+#   - update_rate thấp hơn (200Hz) để phù hợp đường micro-ROS/UART tới STM32
+#     và nhịp relay CAN-FD thật; không cần 1000Hz như sim.
+#   - command_interfaces: position/velocity/kp/kd/effort. "effort" o day la Tff
+#     gui kem lenh PD BabyAlpha2, khong phai effort-only mode. velocity la dao
+#     ham quy dao IK va duoc ma hoa vao v_des cua cung frame CAN-FD.
 #   - state_interfaces: position/velocity (không effort - board driver không
 #     báo dòng điện/torque về).
 controller_manager:
@@ -42,7 +41,9 @@ controller:
       - hind_left_knee_joint
 
     command_interfaces:
+      - effort
       - position
+      - velocity
       - kp
       - kd
 
@@ -65,16 +66,30 @@ controller:
        -0.176, -0.1295, -0.10,
        -0.176,  0.1295, -0.10 ]
 
-    stand_kp: 50.0
-    stand_kd: 1.5
-    sit_kp: 50.0
-    sit_kd: 1.5
+    # Per-joint order: FR abad/hip/knee, FL, RR, RL. Sau khi them Tff mass
+    # override 8.0 kg, PD khong nen tiep tuc "ganh tai" qua cung. Phan bo nay
+    # giu Kp < 35 nhu yeu cau: abad mem hon vi chu yeu giu ngang, hip tang len
+    # de chong hien tuong hang co cum, knee van cao nhat de giu chieu cao than.
+    # Kd giam so voi ban 1.5/1.3/2.0 vi test that cho thay tang D lam motor keu
+    # hon - kha nang cao velocity feedback/driver D-term dang khuech dai nhieu.
+    stand_kp: [17.0, 21.0, 25.0, 17.0, 21.0, 25.0,
+               17.0, 21.0, 25.0, 17.0, 21.0, 25.0]
+    stand_kd: [1.0, 1.15, 1.35, 1.0, 1.15, 1.35,
+               1.0, 1.15, 1.35, 1.0, 1.15, 1.35]
+    sit_kp: [17.0, 21.0, 25.0, 17.0, 21.0, 25.0,
+             17.0, 21.0, 25.0, 17.0, 21.0, 25.0]
+    sit_kd: [1.0, 1.15, 1.35, 1.0, 1.15, 1.35,
+             1.0, 1.15, 1.35, 1.0, 1.15, 1.35]
 
-    # Thoi gian noi suy tanh (giay) - mac dinh 1.2 (StateHoldPose.h) cho ca 2 chieu.
-    # sit_duration tang len - y het controllers.yaml (sim), tranh soc co khi khi
-    # ngoi xuong tren robot that (quan trong hon ca sim vi day la dong co/hop so
-    # that, khong phai vat ly gia lap).
-    stand_duration: 1.2
+    # qd_des = (q_des[k] - q_des[k-1]) / period tu hai nghiem IK hop le lien
+    # tiep. 5 rad/s la tran bao thu theo tung khop o EC; STM32 kep lai doc lap.
+    velocity_max_rad_s: [5.0, 5.0, 5.0, 5.0, 5.0, 5.0,
+                         5.0, 5.0, 5.0, 5.0, 5.0, 5.0]
+
+    # Thoi gian chia nho target Cartesian bang smoothstep huu han: toi dung target
+    # trong duration, sau do chot nghiem IK cuoi va ep vel_des=0 de khong con
+    # "băm" nho vi tanh tiem can/IK lap lai. Sit cham hon de tranh soc co khi.
+    stand_duration: 2.0
     sit_duration: 2.5
 
     # FK/IK chain config - y het controllers.yaml (sim), dung chung 1 URDF.
@@ -85,10 +100,34 @@ controller:
       - hind_right_foot
       - hind_left_foot
 
-    # Tff KHONG the chay tren duong nay du co dat scale>0 - command_interfaces
-    # o tren khong khai "effort" (board driver khong nhan lenh torque, xem
-    # comment dau file) nen joint_torque_command_interface_ luon rong (size=0),
-    # StateHoldPose::run() tu dong bo qua toan bo khoi Tff (has_torque=false).
-    # Giu 0.0 de tuong minh, khong phai vi can thiet.
-    tau_ff_scale: 0.0
-    tau_ff_max_nm: 2.0
+    # Static load feedforward on the EC: tau_ff = -J(q_measured)^T*F_support.
+    # A real tau_ff_scale=0 baseline with the same target/Kp/Kd confirmed this
+    # controller-frame sign on 11/12 joints; the lone FR-hip exception had only
+    # 0.020 N.m raw J^T*F (near its sign crossing). Scale 0.10 passed the first
+    # settled verification (10/12 pose errors improved); advance conservatively
+    # to 0.80 and keep the robot secured. The real robot is ~8.5 kg; use 8.0 kg
+    # as the Tff tuning mass instead of the URDF inertial sum. Stand ramps it up;
+    # Sit ramps it down; Passive/ESTOP = 0.
+    tau_ff_scale: 0.80
+    tau_ff_mass_kg: 8.0
+    tau_ff_ramp_seconds: 1.0
+    tau_ff_load_share: [0.24, 0.24, 0.26, 0.26]
+    # Per-joint multiplier after global tau_ff_scale, order FR/FL/RR/RL
+    # abad/hip/knee. Reduce abad most to avoid hip-abduction pulling the legs
+    # inward; reduce hip/knee to avoid Tff straightening the legs past target.
+    tau_ff_joint_scale: [0.35, 1.00, 1.05, 0.35, 1.00, 1.05,
+                         0.35, 1.00, 1.05, 0.35, 1.00, 1.05]
+    # No fast error-based Tff loop: real tests showed it can pump the body and
+    # increase bounce. Instead, print settled diagnostics for slow/static
+    # tuning of tau_ff_joint_scale and tau_ff_load_share.
+    tau_ff_diagnostics_enabled: true
+    tau_ff_diagnostics_start_seconds: 2.0
+    tau_ff_diagnostics_period_seconds: 1.0
+    # Optional pose trim after IK, same joint order. Leave zero until measured
+    # settled errors show a repeatable bias per joint.
+    stand_joint_trim_rad: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                           0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    sit_joint_trim_rad: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                         0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    tau_ff_max_nm: [10.0, 10.0, 10.0, 10.0, 10.0, 10.0,
+                    10.0, 10.0, 10.0, 10.0, 10.0, 10.0]
