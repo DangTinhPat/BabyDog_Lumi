@@ -256,10 +256,9 @@ must shift by the same amount (`new = old − home`) since they don't move autom
   drivers reported `status=0x0001`; runtime fault and bus-off stayed zero through 22,866 commands,
   with no sequence or publish errors. Steady-state rates were `/joint_cmd=200.00 Hz`,
   `/joint_fb=199.6-199.8 Hz`, and `/imu/raw=100 Hz`.
-- **Remaining staged test**: no active command was sent. After physically restoring the prone HOME
-  pose and resetting the MCU again, 11 measured joints were `0.000 rad` and the remaining joint was
-  `-0.005 rad`, with clean masks/counters. The HOME prerequisite now passes; the first force-bearing
-  Stand remains a user-controlled physical test.
+- **Staged baseline**: before the active test, restoring prone HOME and resetting the MCU produced
+  11 measured joints at `0.000 rad` and one at `-0.005 rad`, with clean masks/counters. The later
+  force-bearing Stand verification is recorded in 2.13 below.
 
 ### 2.13. Incoherent FK/IK start snapshot could hold HOME with active gains
 
@@ -278,7 +277,8 @@ must shift by the same amount (`new = old − home`) since they don't move autom
 - **Verification**: an offline real-stack test with synthetic `+0.005 rad` knee feedback reached
   the expected logical Stand targets (`abad=+/-0.360`, `hip=+0.490`, `knee=-1.210 rad`) without an
   IK error. A `+0.050 rad` test kept all Kp/Kd/Tff fields at zero. Gazebo Stand and the controller
-  build also passed. A secured physical Stand retest remains operator-controlled.
+  build also passed. The subsequent physical Stand test completed successfully: the robot rose
+  smoothly and showed no visible vibration, bouncing or joint chatter.
 
 ## 3. Known open issues
 
