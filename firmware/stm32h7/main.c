@@ -59,7 +59,7 @@
 
 /* Che do bring-up TOI GIAN THU 2: CHI test lop vat ly UART1 (micro-ROS/PA9-
  * PA10) - gui lap lai 1 chuoi co dinh qua USART_SendString() (polling, KHONG
- * dung TX ring buffer/ISR cua microros_transport.c), nhay LED PC13 moi lan
+ * dung transport XRCE cua microros_transport.c), nhay LED PC13 moi lan
  * gui - hoan toan KHONG dung toi CAN/Actuator_Init()/micro-ROS. Dung de tach
  * bach: neu chuoi nay KHONG bao gio toi duoc may tinh (vd qua `cat -v
  * /dev/ttyUSB0` hoac python pyserial raw), loi chac chan o lop vat ly (day/
@@ -71,7 +71,7 @@
  * PA10/RX) - BRINGUP_UART_ECHO_ONLY o tren CHI test MCU->PC (TX), chua tung
  * test rieng PC->MCU. Vong lap nay POLLING THUAN TUY (USART_IsDataAvailable/
  * USART_ReceiveByte/USART_SendByte cua usart.c) - KHONG dung ngat RXNE, KHONG
- * dung tx_ring/rx_ring cua microros_transport.c - de tach bach hoan toan lop
+ * dung rx_ring cua microros_transport.c - de tach bach hoan toan lop
  * thanh ghi USART1 + GPIO PA9/PA10 that (co dung AF7/pull-up hay khong) ra
  * khoi logic ISR/ring buffer. Echo lai NGUYEN VEN tung byte nhan duoc + nhay
  * LED PC13 moi byte. Neu gui 1 chuoi da biet tu PC (vd `cat` mot file lon qua
@@ -98,6 +98,7 @@
 #define LED_ACTIVE_WINDOW_MS 1000U
 
 #define JOINT_FB_SEND_PERIOD_MS 5U /* ~200Hz, khớp nhịp update_rate cua controllers_real.yaml */
+#define JOINT_DIAG_SEND_PERIOD_MS 100U
 #define JOINT_CMD_TIMEOUT_MS 200U /* mat /joint_cmd -> ngat luc, khong fallback goc */
 #define IMU_SAMPLE_PERIOD_MS 10U  /* MPU6050 configured at 100Hz */
 #define IMU_RETRY_PERIOD_MS 1000U
@@ -448,23 +449,24 @@ int main(void)
     MicroRosBridge_Begin();
 
     uint32_t last_joint_fb_ms = 0U;
+    uint32_t last_joint_diag_ms = 0U;
     uint32_t last_imu_sample_ms = 0U;
     uint32_t last_imu_retry_ms = Tick_GetMs();
     uint32_t imu_consecutive_read_errors = 0U;
     uint32_t last_led_toggle_ms = 0U;
     uint32_t last_reenable_ms = 0U;
-    /* Dung "epoch" cua chinh last_joint_cmd_ms lam moc, thay vi 1 co bool don
-     * gian - tu reset khi co lenh moi toi (xem watchdog /joint_cmd ben duoi),
-     * khong can them bien theo doi "da phuc hoi" rieng. 0 = chua tung that
-     * luc lan nao. */
-    uint32_t joint_cmd_disable_latch_ms = 0U;
+    /* Command counter lam epoch cho watchdog; khong dung timestamp=0 lam
+     * sentinel vi TIM2 co the wrap dung ve 0 sau khi chay dai ngay. */
+    uint32_t joint_cmd_disable_latch_count = 0U;
 
     while (1)
     {
-        const uint32_t now_ms = Tick_GetMs();
-
         MicroRosBridge_SpinSome(); /* xu ly callback subscription /joint_cmd neu co du
                                      * lieu moi (goi Actuator_SetTarget() ben trong) */
+        /* Lay timestamp SAU spin: callback co the cap nhat last_joint_cmd_ms
+         * va di qua ranh gioi 1ms. Dung timestamp truoc spin de tru timestamp
+         * moi se underflow uint32_t va kich watchdog gia ngay lap tuc. */
+        const uint32_t now_ms = Tick_GetMs();
 
         /* main() la noi DUY NHAT goi CAN_Receive() cho moi instance, roi tu
          * dinh tuyen theo id - tranh 2 ham khac nhau cung rut frame khoi 1
@@ -497,22 +499,36 @@ int main(void)
          * khi ket noi phan cung that - fix nay chu dong Actuator_Disable()
          * MOT LAN moi lan phat hien mat lien ket (dung last_joint_cmd_ms lam
          * "epoch" de tu reset khi co lenh moi toi, tranh spam CAN moi vong lap
-         * sau khi da that luc). Bo qua neu chua tung nhan lenh nao ca (
-         * last_joint_cmd_ms == 0, dong co da o trang thai disable tu luc
-         * Actuator_Init() roi, khong can goi lai). */
+         * sau khi da that luc). Bo qua neu chua tung nhan lenh nao ca; trang
+         * thai nay duoc theo doi bang co rieng, khong suy ra tu timestamp=0. */
         const uint32_t last_joint_cmd_ms = MicroRosBridge_LastJointCmdMs();
-        if (last_joint_cmd_ms != 0U &&
-            (now_ms - last_joint_cmd_ms) >= JOINT_CMD_TIMEOUT_MS &&
-            joint_cmd_disable_latch_ms != last_joint_cmd_ms)
+        const uint32_t joint_cmd_count = MicroRosBridge_JointCmdCount();
+        if (MicroRosBridge_HasReceivedJointCmd() &&
+            (!MicroRosBridge_IsConnected() ||
+             (now_ms - last_joint_cmd_ms) >= JOINT_CMD_TIMEOUT_MS) &&
+            joint_cmd_disable_latch_count != joint_cmd_count)
         {
             Actuator_Disable();
-            joint_cmd_disable_latch_ms = last_joint_cmd_ms;
+            /* A host/controller restart starts JointCmd.seq again at zero. The
+             * watchdog boundary separates publisher epochs, so the first new
+             * command must establish a baseline instead of being counted as a
+             * large packet gap against the old process's final sequence. */
+            MicroRosBridge_ResetCommandSequence();
+            joint_cmd_disable_latch_count = joint_cmd_count;
         }
+
+        Actuator_ServiceSafety();
 
         if ((now_ms - last_joint_fb_ms) >= JOINT_FB_SEND_PERIOD_MS)
         {
             last_joint_fb_ms = now_ms;
             MicroRosBridge_PublishJointFb();
+        }
+
+        if ((now_ms - last_joint_diag_ms) >= JOINT_DIAG_SEND_PERIOD_MS)
+        {
+            last_joint_diag_ms = now_ms;
+            MicroRosBridge_PublishJointDiag();
         }
 
         if (imu_ready && ((now_ms - last_imu_sample_ms) >= IMU_SAMPLE_PERIOD_MS))
@@ -563,7 +579,9 @@ int main(void)
          * ROS/UART1 hay khong - nhay lien tuc trong luc con nhan lenh gan day,
          * tat han khi ngung gui (khong lien quan CAN/dong co, xem
          * LED_ACTIVE_WINDOW_MS o dau file). */
-        if ((now_ms - MicroRosBridge_LastJointCmdMs()) < LED_ACTIVE_WINDOW_MS)
+        const uint32_t led_last_joint_cmd_ms = MicroRosBridge_LastJointCmdMs();
+        if (MicroRosBridge_HasReceivedJointCmd() &&
+            (now_ms - led_last_joint_cmd_ms) < LED_ACTIVE_WINDOW_MS)
         {
             if ((now_ms - last_led_toggle_ms) >= LED_BLINK_PERIOD_MS)
             {

@@ -13,6 +13,8 @@ namespace
 {
 rclcpp::Logger Logger() { return rclcpp::get_logger("main_bot_hardware"); }
 constexpr double kTauFfAbsLimitNm = 10.0;
+constexpr uint16_t kAllJointsMask = (1U << 12U) - 1U;
+constexpr auto kJointFbTimeout = std::chrono::milliseconds(100);
 
 // Kep + kiem tra NaN/inf TRUOC khi ep kieu sang int16_t/uint16_t - ep kieu 1 double
 // vuot pham vi bieu dien (hoac NaN) sang kieu nguyen la undefined behavior trong
@@ -55,12 +57,16 @@ hardware_interface::CallbackReturn RealSystem::on_init(const hardware_interface:
 std::vector<hardware_interface::StateInterface> RealSystem::export_state_interfaces()
 {
   std::vector<hardware_interface::StateInterface> interfaces;
-  interfaces.reserve(kJointCount * 3U);
+  interfaces.reserve(kJointCount * 5U);
   for (uint32_t i = 0; i < kJointCount; i++)
   {
     interfaces.emplace_back(info_.joints[i].name, "position", &position_state_[i]);
     interfaces.emplace_back(info_.joints[i].name, "velocity", &velocity_state_[i]);
     interfaces.emplace_back(info_.joints[i].name, "effort", &effort_state_[i]);
+    interfaces.emplace_back(
+      info_.joints[i].name, "visual_position", &visual_position_state_[i]);
+    interfaces.emplace_back(
+      info_.joints[i].name, "visual_velocity", &visual_velocity_state_[i]);
   }
   return interfaces;
 }
@@ -84,7 +90,40 @@ void RealSystem::JointFbCallback(const main_bot_hardware_msgs::msg::JointFb & ms
 {
   std::lock_guard<std::mutex> lock(joint_fb_mutex_);
   latest_joint_fb_ = msg;
+  latest_joint_fb_time_ = std::chrono::steady_clock::now();
   has_joint_fb_ = true;
+}
+
+void RealSystem::JointDiagCallback(const main_bot_hardware_msgs::msg::JointDiag & msg)
+{
+  const bool changed = !has_joint_diag_ || msg.ready_mask != last_ready_mask_ ||
+    msg.runtime_fault_mask != last_runtime_fault_mask_ ||
+    msg.can_bus_off_mask != last_can_bus_off_mask_;
+  if (!changed) { return; }
+
+  if (msg.runtime_fault_mask != 0U || msg.can_bus_off_mask != 0U)
+  {
+    RCLCPP_ERROR(
+      Logger(), "MCU runtime fault=0x%03x, CAN bus-off=0x%02x, ready=0x%03x",
+      static_cast<unsigned int>(msg.runtime_fault_mask),
+      static_cast<unsigned int>(msg.can_bus_off_mask),
+      static_cast<unsigned int>(msg.ready_mask));
+  }
+  else if (msg.ready_mask != kAllJointsMask)
+  {
+    RCLCPP_WARN(
+      Logger(), "MCU chi co ready mask 0x%03x/0x%03x",
+      static_cast<unsigned int>(msg.ready_mask), static_cast<unsigned int>(kAllJointsMask));
+  }
+  else if (has_joint_diag_)
+  {
+    RCLCPP_INFO(Logger(), "MCU/CAN da tro lai trang thai ready");
+  }
+
+  has_joint_diag_ = true;
+  last_ready_mask_ = msg.ready_mask;
+  last_runtime_fault_mask_ = msg.runtime_fault_mask;
+  last_can_bus_off_mask_ = msg.can_bus_off_mask;
 }
 
 hardware_interface::CallbackReturn RealSystem::on_configure(
@@ -96,6 +135,10 @@ hardware_interface::CallbackReturn RealSystem::on_configure(
   position_state_.fill(std::numeric_limits<double>::quiet_NaN());
   velocity_state_.fill(std::numeric_limits<double>::quiet_NaN());
   effort_state_.fill(0.0);
+  // HOME is logical zero. These values are only mapped into /joint_states for
+  // TF/RViz and hold their last finite sample if feedback later becomes stale.
+  visual_position_state_.fill(0.0);
+  visual_velocity_state_.fill(0.0);
   position_command_.fill(0.0);
   velocity_command_.fill(0.0);
   kp_command_.fill(0.0);
@@ -105,7 +148,12 @@ hardware_interface::CallbackReturn RealSystem::on_configure(
     std::lock_guard<std::mutex> lock(joint_fb_mutex_);
     has_joint_fb_ = false;
     latest_joint_fb_ = main_bot_hardware_msgs::msg::JointFb{};
+    latest_joint_fb_time_ = std::chrono::steady_clock::time_point{};
   }
+  has_joint_diag_ = false;
+  last_ready_mask_ = 0U;
+  last_runtime_fault_mask_ = 0U;
+  last_can_bus_off_mask_ = 0U;
 
   // get_node(): rclcpp::Node do chinh hardware_interface framework tao + spin cho moi
   // hardware component (xem real_system.hpp) - khong tu quan ly executor/thread rieng.
@@ -114,6 +162,9 @@ hardware_interface::CallbackReturn RealSystem::on_configure(
   joint_fb_sub_ = get_node()->create_subscription<main_bot_hardware_msgs::msg::JointFb>(
     "/joint_fb", rclcpp::SensorDataQoS(),
     [this](const main_bot_hardware_msgs::msg::JointFb & msg) { JointFbCallback(msg); });
+  joint_diag_sub_ = get_node()->create_subscription<main_bot_hardware_msgs::msg::JointDiag>(
+    "/joint_diag", rclcpp::SensorDataQoS(),
+    [this](const main_bot_hardware_msgs::msg::JointDiag & msg) { JointDiagCallback(msg); });
 
   return hardware_interface::CallbackReturn::SUCCESS;
 }
@@ -128,16 +179,25 @@ hardware_interface::return_type RealSystem::read(
     if (has_joint_fb_)
     {
       fb = latest_joint_fb_;
-      got_fb = true;
+      got_fb = (std::chrono::steady_clock::now() - latest_joint_fb_time_) < kJointFbTimeout;
     }
   }
 
-  if (got_fb)
+  for (uint32_t i = 0; i < kJointCount; i++)
   {
-    for (uint32_t i = 0; i < kJointCount; i++)
+    if (got_fb && (fb.valid_mask & (1U << i)) != 0U)
     {
       position_state_[i] = static_cast<double>(fb.measured_angle_mrad[i]) / 1000.0;
       velocity_state_[i] = static_cast<double>(fb.measured_velocity_mrad_s[i]) / 1000.0;
+      effort_state_[i] = static_cast<double>(fb.measured_effort_mnm[i]) / 1000.0;
+      visual_position_state_[i] = position_state_[i];
+      visual_velocity_state_[i] = velocity_state_[i];
+    }
+    else
+    {
+      position_state_[i] = std::numeric_limits<double>::quiet_NaN();
+      velocity_state_[i] = std::numeric_limits<double>::quiet_NaN();
+      effort_state_[i] = 0.0;
     }
   }
 

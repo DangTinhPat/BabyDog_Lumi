@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <iterator>
 
 StateHoldPose::StateHoldPose(CtrlInterfaces& ctrl_interfaces,
                               const FSMStateName state_name,
@@ -92,9 +93,40 @@ bool StateHoldPose::initializeCartesianMotion(const std::shared_ptr<QuadrupedRob
         }
     }
 
-    // Use the exact same coherent encoder snapshot for FK and as the first IK
-    // seed. This avoids a stale/model-cache read at a state transition.
-    const auto measured_feet = robot_model->getFeet2BPositions(measured_q);
+    // HOME is allowed to sit a few milliradians beyond a URDF boundary because
+    // of encoder quantization/backlash (the knee upper limit is exactly zero).
+    // Clamp that small excess before both FK and IK so they still describe the
+    // same starting configuration. Clamping only the IK seed while computing
+    // start feet from the raw sample makes the first target unreachable inside
+    // the limits, leaving Kp/Kd enabled at HOME while percent_ never advances.
+    constexpr double kMaxInitialLimitExcessRad = 0.02;
+    std::vector<KDL::JntArray> motion_start_q = measured_q;
+    for (int leg = 0; leg < 4; ++leg)
+    {
+        const KDL::JntArray raw_q = motion_start_q[leg];
+        if (robot_model->clampLegToLimits(leg, motion_start_q[leg]))
+        {
+            for (int joint = 0; joint < 3; ++joint)
+            {
+                const double excess = std::abs(motion_start_q[leg](joint) - raw_q(joint));
+                if (!std::isfinite(excess) || excess > kMaxInitialLimitExcessRad)
+                {
+                    if (!initialization_error_reported_)
+                    {
+                        fprintf(stderr,
+                                "StateHoldPose::initializeCartesianMotion(): leg %d joint %d "
+                                "feedback vuot URDF limit %.6f rad; tu choi bat gain.\n",
+                                leg, joint, excess);
+                        initialization_error_reported_ = true;
+                    }
+                    return false;
+                }
+            }
+        }
+    }
+
+    // Use the same bounded encoder snapshot for FK and as the first IK seed.
+    const auto measured_feet = robot_model->getFeet2BPositions(motion_start_q);
     if (measured_feet.size() != 4)
     {
         return false;
@@ -110,7 +142,7 @@ bool StateHoldPose::initializeCartesianMotion(const std::shared_ptr<QuadrupedRob
     // can choose the mirrored (out-of-limit) knee branch. run() follows small
     // Cartesian increments and validates convergence + limits before every
     // command, which reliably stays on the measured branch.
-    ik_seed_ = std::move(measured_q);
+    ik_seed_ = std::move(motion_start_q);
     // Bake the trim into the seed now (not into start_foot_positions_/FK above,
     // which must stay the true physical pose) so run()'s very first velocity
     // sample - (q_command including trim) minus ik_seed_ - doesn't see a one-
@@ -122,8 +154,12 @@ bool StateHoldPose::initializeCartesianMotion(const std::shared_ptr<QuadrupedRob
         {
             ik_seed_[leg](joint) += joint_trim_rad_[leg * 3 + joint];
         }
+        // Trim is bounded independently in on_init(), but keep the final seed
+        // inside the same URDF limits used by solveFootIK().
+        (void)robot_model->clampLegToLimits(leg, ik_seed_[leg]);
     }
     motion_ready_ = true;
+    initialization_error_reported_ = false;
     return true;
 }
 
@@ -172,13 +208,14 @@ void StateHoldPose::enter()
         {
             std::ignore = ctrl_interfaces_.joint_velocity_command_interface_[i].get().set_value(0.0);
         }
-        // Keep position actuation disabled until feedback and FK are valid.
-        // Every IK command is validated separately in run().
+        // Kd also produces torque. Keep every gain disabled until all 12
+        // feedback values and the initial FK/IK snapshot are valid.
         std::ignore = ctrl_interfaces_.joint_kp_command_interface_[i].get().set_value(0.0);
-        std::ignore = ctrl_interfaces_.joint_kd_command_interface_[i].get().set_value(kd_[i]);
+        std::ignore = ctrl_interfaces_.joint_kd_command_interface_[i].get().set_value(0.0);
     }
     percent_ = 0;
     motion_ready_ = false;
+    initialization_error_reported_ = false;
     ik_error_reported_ = false;
     tff_ramp_reported_ = false;
     tff_active_reported_ = false;
@@ -192,6 +229,7 @@ void StateHoldPose::enter()
         for (int i = 0; i < 12; ++i)
         {
             std::ignore = ctrl_interfaces_.joint_kp_command_interface_[i].get().set_value(kp_[i]);
+            std::ignore = ctrl_interfaces_.joint_kd_command_interface_[i].get().set_value(kd_[i]);
         }
     }
     else
@@ -206,6 +244,46 @@ void StateHoldPose::enter()
 void StateHoldPose::run(const rclcpp::Time& /*time*/, const rclcpp::Duration& period)
 {
     const auto robot_model_snapshot = std::atomic_load(&robot_model_);
+
+    // A pose command must never continue from a cached IK/model state after
+    // raw encoder feedback becomes invalid. Drop every torque-producing term
+    // and restart interpolation from a new coherent snapshot after recovery.
+    bool all_feedback_valid =
+        ctrl_interfaces_.joint_position_state_interface_.size() == 12;
+    if (all_feedback_valid)
+    {
+        for (int i = 0; i < 12; ++i)
+        {
+            const auto feedback =
+                ctrl_interfaces_.joint_position_state_interface_[i].get().get_optional();
+            if (!feedback || !std::isfinite(*feedback))
+            {
+                all_feedback_valid = false;
+                break;
+            }
+        }
+    }
+    if (!all_feedback_valid)
+    {
+        zeroOptionalVelocityCommand();
+        zeroOptionalTorqueCommand();
+        for (int i = 0; i < 12; ++i)
+        {
+            std::ignore =
+                ctrl_interfaces_.joint_kp_command_interface_[i].get().set_value(0.0);
+            std::ignore =
+                ctrl_interfaces_.joint_kd_command_interface_[i].get().set_value(0.0);
+        }
+        tau_ff_support_blend_ = 0.0;
+        tff_settled_seconds_ = 0.0;
+        tff_diagnostics_elapsed_ = 0.0;
+        percent_ = 0.0;
+        motion_ready_ = false;
+        initialization_error_reported_ = false;
+        ik_error_reported_ = false;
+        return;
+    }
+
     if (!motion_ready_)
     {
         if (!initializeCartesianMotion(robot_model_snapshot))
@@ -215,6 +293,7 @@ void StateHoldPose::run(const rclcpp::Time& /*time*/, const rclcpp::Duration& pe
         for (int i = 0; i < 12; ++i)
         {
             std::ignore = ctrl_interfaces_.joint_kp_command_interface_[i].get().set_value(kp_[i]);
+            std::ignore = ctrl_interfaces_.joint_kd_command_interface_[i].get().set_value(kd_[i]);
         }
     }
 
@@ -438,7 +517,9 @@ void StateHoldPose::run(const rclcpp::Time& /*time*/, const rclcpp::Duration& pe
             }
             const bool stand_tff_settled =
                 state_name == FSMStateName::STAND && percent_ >= 1.0 &&
-                tau_ff_support_blend_ >= 1.0 - 1e-6;
+                tau_ff_support_blend_ >= 1.0 - 1e-6 &&
+                std::all_of(std::begin(error_valid), std::end(error_valid),
+                            [](const bool valid) { return valid; });
             if (stand_tff_settled)
             {
                 tff_settled_seconds_ += dt;

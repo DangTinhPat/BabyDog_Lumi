@@ -1,8 +1,9 @@
 # Makefile tiện ích - chạy nhanh không cần nhớ lệnh ros2 launch/run dài dòng
 # hay mở nhiều terminal. Xem GUIDE.md để biết chi tiết từng lệnh.
 #
-# Quy ước: mọi target ROS2 tự source /opt/ros/jazzy/setup.bash + install/setup.bash,
-# không cần bạn source tay trước (nhưng phải `make build` ít nhất 1 lần trước).
+# Quy ước: mọi target ROS2 tự source /opt/ros/jazzy/setup.bash + install/setup.bash;
+# target real source thêm micro-ROS agent workspace. Không cần source tay trước
+# (nhưng phải `make build` ít nhất 1 lần trước).
 
 ROS_DISTRO ?= jazzy
 MROS_WS ?= $(HOME)/mros/mros_ws
@@ -11,9 +12,10 @@ IMU_SERIAL_BAUD ?= 921600
 SHELL := /bin/bash
 ROS_SETUP := source /opt/ros/$(ROS_DISTRO)/setup.bash && source install/setup.bash
 MROS_SETUP := source /opt/ros/$(ROS_DISTRO)/setup.bash && source $(MROS_WS)/install/setup.bash
+REAL_ROS_SETUP := source /opt/ros/$(ROS_DISTRO)/setup.bash && source $(MROS_WS)/install/setup.bash && source install/setup.bash
 
 .PHONY: help build sim sim-no-rviz rz-sim real real-no-rviz rz-real gui keyboard joystick \
-        imu-test imu-monitor firmware firmware-flash microros-lib controllers estop stand sit \
+        imu-test imu-monitor firmware firmware-test firmware-flash microros-lib controllers estop stand sit \
         clean firmware-clean kill
 
 help:
@@ -41,8 +43,9 @@ help:
 	@echo "  make kill           - tắt hết tiến trình Gazebo còn sót"
 	@echo ""
 	@echo "Firmware STM32H7 (cần arm-none-eabi-gcc, xem firmware/stm32h7/README.md):"
-	@echo "  make microros-lib    - regenerate lib/type-support MCU sau khi đổi JointCmd/JointFb/ImuRaw"
+	@echo "  make microros-lib    - regenerate lib/type-support MCU sau khi đổi các message firmware"
 	@echo "  make firmware       - build firmware/stm32h7"
+	@echo "  make firmware-test  - unit test codec BabyAlpha2 tren host"
 	@echo "  make firmware-flash - build + nạp qua ST-Link (st-flash)"
 	@echo "  make firmware-clean - xoá build firmware"
 	@echo ""
@@ -61,10 +64,10 @@ rz-sim:
 	$(ROS_SETUP) && ros2 launch main_bot rz_sim.launch.py
 
 real:
-	$(ROS_SETUP) && ros2 launch main_bot real_ros2_control.launch.py
+	$(REAL_ROS_SETUP) && ros2 launch main_bot real_ros2_control.launch.py
 
 real-no-rviz:
-	$(ROS_SETUP) && ros2 launch main_bot real_ros2_control.launch.py rviz:=false
+	$(REAL_ROS_SETUP) && ros2 launch main_bot real_ros2_control.launch.py rviz:=false
 
 rz-real:
 	$(ROS_SETUP) && ros2 launch main_bot rz_real.launch.py
@@ -102,6 +105,9 @@ kill:
 
 firmware:
 	$(MAKE) -C firmware/stm32h7
+
+firmware-test:
+	$(MAKE) -C firmware/stm32h7 test
 
 microros-lib:
 	cd firmware/stm32h7/microros && $(MROS_SETUP) && \

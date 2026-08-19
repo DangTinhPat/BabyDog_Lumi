@@ -9,11 +9,14 @@
 
 TARGET   = firmware
 BUILD_DIR = build
+HOST_BUILD_DIR = build-host
+BUILD ?= release
 
 PREFIX  = arm-none-eabi-
 CC      = $(PREFIX)gcc
 OBJCOPY = $(PREFIX)objcopy
 SIZE    = $(PREFIX)size
+HOST_CC ?= cc
 
 # ---- MCU: STM32H743XIH6 (Cortex-M7, co FPU double-precision fpv5-d16) ----
 MCU_FLAGS = -mcpu=cortex-m7 -mthumb -mfpu=fpv5-d16 -mfloat-abi=hard
@@ -38,6 +41,14 @@ MICROROS_LIB    = $(MICROROS_DIR)/libmicroros.a
 
 DEFINES = -DSTM32H743xx -D_POSIX_C_SOURCE=200809L -D_POSIX_TIMERS -D_POSIX_MONOTONIC_CLOCK
 
+ifeq ($(BUILD),release)
+OPT_FLAGS = -O2 -g1 -DNDEBUG
+else ifeq ($(BUILD),debug)
+OPT_FLAGS = -Og -g3
+else
+$(error BUILD must be release or debug)
+endif
+
 LIB_DIR     = lib
 LIB_INCDIR  = $(LIB_DIR)/inc
 LIB_SRCDIR  = $(LIB_DIR)/src
@@ -54,10 +65,11 @@ C_SOURCES = \
 
 LDSCRIPT = stm32h743xihx_flash.ld
 
-CFLAGS  = $(MCU_FLAGS) $(DEFINES) -Wall -Wextra -O0 -g3 -std=c11 \
+CFLAGS  = $(MCU_FLAGS) $(DEFINES) -Wall -Wextra $(OPT_FLAGS) -std=c11 \
           -I$(LIB_INCDIR) -I$(APP_INCDIR) -I$(MICROROS_INCDIR) \
           $(if $(NEWLIB_INCDIR),-isystem $(NEWLIB_INCDIR)) \
           -ffunction-sections -fdata-sections \
+          -fstack-usage -fno-common \
           -MMD -MP -MF"$(BUILD_DIR)/$(*F).d"
 
 # -lstdc++ -lsupc++: libmicroros.a co vai file .cpp (rosidl_typesupport_c luon sinh 1
@@ -76,6 +88,14 @@ vpath %.c $(sort $(dir $(C_SOURCES)))
 all: $(BUILD_DIR)/$(TARGET).elf $(BUILD_DIR)/$(TARGET).hex $(BUILD_DIR)/$(TARGET).bin
 	$(SIZE) $(BUILD_DIR)/$(TARGET).elf
 
+test: $(HOST_BUILD_DIR)/test_baby_alpha2_protocol
+	$<
+
+$(HOST_BUILD_DIR)/test_baby_alpha2_protocol: test/test_baby_alpha2_protocol.c \
+		$(APP_SRCDIR)/baby_alpha2_protocol.c $(APP_INCDIR)/baby_alpha2_protocol.h | $(HOST_BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 \
+		-I$(LIB_INCDIR) -I$(APP_INCDIR) $(filter %.c,$^) -lm -o $@
+
 $(BUILD_DIR)/%.o: %.c Makefile | $(BUILD_DIR)
 	$(CC) -c $(CFLAGS) $< -o $@
 
@@ -91,12 +111,15 @@ $(BUILD_DIR)/%.bin: $(BUILD_DIR)/%.elf | $(BUILD_DIR)
 $(BUILD_DIR):
 	mkdir -p $@
 
+$(HOST_BUILD_DIR):
+	mkdir -p $@
+
 flash: $(BUILD_DIR)/$(TARGET).bin
 	st-flash --reset write $(BUILD_DIR)/$(TARGET).bin 0x08000000
 
 clean:
-	rm -rf $(BUILD_DIR)
+	rm -rf $(BUILD_DIR) $(HOST_BUILD_DIR)
 
-.PHONY: all clean flash
+.PHONY: all clean flash test
 
 -include $(wildcard $(BUILD_DIR)/*.d)

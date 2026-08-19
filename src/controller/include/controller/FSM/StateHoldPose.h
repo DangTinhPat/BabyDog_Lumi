@@ -66,6 +66,7 @@ private:
     std::vector<KDL::Vector> start_foot_positions_;
     std::vector<KDL::JntArray> ik_seed_;
     bool motion_ready_ = false;
+    bool initialization_error_reported_ = false;
     bool ik_error_reported_ = false;
     bool tff_ramp_reported_ = false;
     bool tff_active_reported_ = false;

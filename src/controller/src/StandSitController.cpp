@@ -425,8 +425,8 @@ namespace controller
         // Ghi mot lenh Passive cuoi cung TRUOC KHI nha loaned interfaces. Neu
         // chi release, cac backing value trong RealSystem co the van giu Kp/Tff
         // cua Stand/Sit va tiep tuc duoc publish trong cac chu ky hardware sau.
-        // Reset support blend roi Passive::enter() xoa toan bo effort/Kp va dat
-        // Kd=1 cho ca 12 khop.
+        // Reset support blend roi Passive::enter() xoa toan bo effort/Kp/Kd cho
+        // ca 12 khop.
         if (current_state_)
         {
             tau_ff_support_blend_ = 0.0;

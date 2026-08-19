@@ -74,8 +74,9 @@ make real-no-rviz        # same, no RViz (e.g. over SSH)
 make imu-test            # real IMU only: agent + Kalman + raw/filtered monitor, no ros2_control
 make imu-monitor         # monitor an already-running IMU pipeline (read-only)
 
-make microros-lib         # regenerate MCU type-support after JointCmd/JointFb/ImuRaw changes
+make microros-lib         # regenerate MCU type-support after firmware message changes
 make firmware            # build firmware/stm32h7 (needs arm-none-eabi-gcc in PATH)
+make firmware-test       # host-side BabyAlpha2 codec unit tests
 make firmware-flash      # build + flash via ST-Link (st-flash --reset write)
 make firmware-clean
 
@@ -108,7 +109,7 @@ Joystick/keyboard (joystick_bridge) --/control_input (controller/msg/Inputs: com
               ▼                                             ▼
         leg_pd_controller (tau = kp·Δq+kd·Δq̇)      main_bot_hardware / RealSystem
               │                                       (publishes /joint_cmd, subscribes
-              ▼                                       /joint_fb via micro-ROS)
+              ▼                                       /joint_fb + /joint_diag via micro-ROS)
         gz_ros2_control -> Gazebo (12 joints)               │ micro_ros_agent (UART1, ~921600 baud)
                                                               ▼
                                                     STM32H7 (firmware/stm32h7/, board
@@ -149,13 +150,16 @@ joint targets get to the motors.
 8. `actuator_if.c` clamps each joint independently. `LogicalToRaw()` converts position with per-leg sign + home offset; velocity and Tff apply the same sign but never a position offset — see Critical invariants.
 9. `baby_alpha2_protocol.c` packs a 12-byte CAN-FD PD frame containing target/v_des/kp/kd/Tff and sends it on the correct bus. `v_des` is offset-binary over ±45 rad/s (`0x8000` = zero); the operational clamp is 5 rad/s/joint on both EC and MCU.
 10. The BabyAlpha2 joint driver board receives the frame and runs its own local PD loop (`pwm = kp*(target-measured) + kd*(v_des-measured_velocity) + tau_ff`) driving the motor and reading its encoder.
-11. The driver board sends a telemetry frame (measured position/velocity) back — STM32 receives it over CAN, decodes with `RawToLogical()` (RAW→LOGIC).
-12. `microros_bridge.c`'s `MicroRosBridge_PublishJointFb()` periodically publishes `/joint_fb` (`measured_angle_mrad`, `measured_velocity_mrad_s` × 12) back up over micro-ROS/UART.
-13. `RealSystem` receives `/joint_fb` → writes it into the state interfaces → feeds `joint_state_broadcaster` (→ `/joint_states` → RViz TF) and becomes the FK input for the next `update()` cycle. Before the first real feedback packet, position/velocity remain NaN deliberately so Stand/Sit holds Kp/Tff at zero instead of treating an invented all-zero pose as valid feedback.
+11. The driver board sends measured position/velocity/torque plus status back. STM32 decodes all three physical values and applies RAW→LOGIC sign conversion to each; position alone also receives the home offset.
+12. `microros_bridge.c` publishes `/joint_fb` at 200 Hz with position/velocity/effort and a per-joint freshness mask, plus `/joint_diag` at 10 Hz with driver status, telemetry age, runtime-fault/bus-off masks and transport counters.
+13. `RealSystem` writes only valid, fresh `/joint_fb` samples into the raw ros2_control position/velocity state interfaces. Before first feedback, after 100 ms without the topic, or when a validity bit clears, they become NaN and effort becomes zero so Stand/Sit cannot keep trusting stale state. Separate `visual_position`/`visual_velocity` interfaces retain the last finite sample (HOME `0` before the first one); `joint_state_broadcaster` maps only these display interfaces into `/joint_states`, so invalid control feedback cannot create NaN TF in `robot_state_publisher`/RViz.
 
-**Safety note**: if `/joint_cmd` stops arriving (firmware watchdog timeout), the MCU cuts torque
-rather than holding the last command — this is why a lost connection on real hardware fails soft
-instead of leaving the robot frozen under load.
+**Safety note**: firmware boot begins with a best-effort `MOTOR_DISABLE` sweep so an MCU-only reset
+cannot leave joint drivers holding an old PD target during initialization. If `/joint_cmd` stops or
+the micro-ROS bridge disconnects, the MCU sends a zero-velocity/zero-Kp/zero-Kd/zero-Tff frame instead
+of holding the last target. Runtime CAN bus-off, continuous telemetry loss, or an unexpected
+Disabled/Standby driver status latches the affected joint offline and queues an explicit
+`MOTOR_DISABLE`; recovery requires a full reboot/recalibration because hot-plug clears driver RAM limits.
 
 ## IMU data flow
 
@@ -177,10 +181,11 @@ For sensor-only bring-up, `make imu-test` runs a dedicated launch containing onl
 serial device or an already-running real agent/controller; it never starts `ros2_control` and the
 monitor creates no motor/control publishers.
 
-## Message contract (`/joint_cmd`/`/joint_fb`/`/imu/raw`)
+## Message contract (`/joint_cmd`/`/joint_fb`/`/joint_diag`/`/imu/raw`)
 
-- `/joint_cmd` (ROS2 -> MCU): `JointCmd{ int16[12] target_angle_mrad; int16[12] target_velocity_mrad_s; uint16[12] kp_x100; uint16[12] kd_x100; int16[12] tau_ff_mnm; uint8 seq }`. Every actuator has independent velocity/gains/Tff. Tff is zero in Passive/ESTOP, ramps up during Stand, and ramps down during Sit; EC and MCU both clamp it per joint.
-- `/joint_fb` (MCU -> ROS2): `JointFb{ int16[12] measured_angle_mrad; int16[12] measured_velocity_mrad_s }`.
+- `/joint_cmd` (ROS2 -> MCU): `JointCmd{ int16[12] target_angle_mrad; int16[12] target_velocity_mrad_s; uint16[12] kp_x100; uint16[12] kd_x100; int16[12] tau_ff_mnm; uint8 seq }`. Every actuator has independent velocity/gains/Tff. Passive/ESTOP zeros velocity, Kp, Kd and Tff; Tff ramps up during Stand and back down during Sit. EC and MCU both clamp it per joint.
+- `/joint_fb` (MCU -> ROS2): `JointFb{ int16[12] measured_angle_mrad; int16[12] measured_velocity_mrad_s; int16[12] measured_effort_mnm; uint16 valid_mask }`. Bit `i` is set only while joint `i` is initialized and its telemetry is younger than 100 ms.
+- `/joint_diag` (MCU -> ROS2, 10 Hz): fixed-size `JointDiag` with ready/fresh/runtime-fault masks, raw driver status, telemetry age, CAN bus-off/TX failures, command sequence anomalies and micro-ROS publish failures.
 - `/imu/raw` (MCU -> ROS2): `ImuRaw{int16[3] linear_acceleration_milli_ms2; int16[3]
   angular_velocity_mrad_s; uint32 stamp_ms; uint8 status}`. The MCU timestamp is delta-time only;
   the EC assigns ROS time to `/imu/data`.
@@ -255,10 +260,11 @@ src/
 │       └── keyboard_input.py                 Reads terminal keyboard ('1'/'2'/'0') -> Inputs.command
 ├── main_bot_hardware/                     ros2_control <-> real firmware bridge
 │   ├── main_bot_hardware.xml                 SystemInterface plugin declaration
-│   └── src/real_system.cpp                   RealSystem: exports state/position+per-joint kp/kd/Tff commands, publishes
-│                                              /joint_cmd, subscribes /joint_fb over micro-ROS
+│   └── src/real_system.cpp                   RealSystem: exports fail-safe raw + last-finite visualization
+│                                              position/velocity states, measured effort and per-joint PD/Tff
+│                                              commands; bridges /joint_cmd, /joint_fb and /joint_diag
 ├── main_bot_hardware_msgs/                Shared ROS2 <-> firmware message definitions
-│   └── msg/JointCmd.msg, JointFb.msg, ImuRaw.msg   See "Message contract" above
+│   └── msg/JointCmd.msg, JointFb.msg, JointDiag.msg, ImuRaw.msg   See "Message contract" above
 ├── imu_kalman_filter/                    EC-side MPU6050/sim filtering
 │   ├── src/imu_kalman.cpp                  testable angle+bias + scalar Kalman core
 │   ├── src/imu_kalman_node.cpp             raw input, calibration, /imu/data + diagnostics
@@ -297,7 +303,7 @@ firmware/stm32h7/
 │   ├── actuator_if.h/.c                     LogicalToRaw/RawToLogical (the ONE place space conversion
 │   │                                        happens), adaptive home offset, sends commands + reads CAN feedback
 │   ├── baby_alpha2_protocol.h/.c             Real 12-byte CAN-FD frame encode/decode per vendor spec
-│   ├── microros_bridge.h/.c                   micro-ROS node, sub /joint_cmd, pub /joint_fb + /imu/raw
+│   ├── microros_bridge.h/.c                   micro-ROS node, sub /joint_cmd, pub /joint_fb + /joint_diag + /imu/raw
 │   ├── app_i2c.h/.c, mpu6050.h/.c             app-local I2C1 + 100 Hz MPU6050 acquisition
 │   ├── microros_transport.h/.c                UART1 transport layer for micro-ROS (ISR-driven RX ring)
 │   ├── microros_time.c                        clock_gettime() for rcutils, backed by Tick_GetMs() (no FreeRTOS)

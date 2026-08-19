@@ -5,7 +5,7 @@
 #include <stdint.h>
 
 /* micro-ROS node "stm32_joint_node" voi subscriber "/joint_cmd" + publishers
- * "/joint_fb" and compact "/imu/raw" (main_bot_hardware_msgs), qua UART1/
+ * "/joint_fb", "/joint_diag" and compact "/imu/raw" (main_bot_hardware_msgs), qua UART1/
  * micro_ros_agent thay vi CAN. Cung reconnect
  * state machine (ping dinh ky khi da connected) voi OUT_SAVE/testSTM/app/src/microros_bridge.c,
  * nhung KHONG FreeRTOS (dung Tick_GetMs() thay xTaskGetTickCount(), khong goi
@@ -16,19 +16,29 @@
  * mat lenh thi ngat luc, khong chay FSM hay fallback ve goc co dinh. */
 void MicroRosBridge_Begin(void);
 
-/* Goi moi vong superloop cua main() (KHONG sleep/block ben trong) - tu quan ly ket noi/
- * tao entity/spin executor (xu ly callback subscription /joint_cmd neu co du lieu moi). */
+/* Goi moi vong superloop cua main(). Khi connected, spin cho toi da 1ms va ping
+ * health toi da 50ms x 2; khi waiting, rcl entity/session creation co the block
+ * theo retry policy cua micro-ROS (motor da duoc watchdog disable truoc khi vao lai). */
 void MicroRosBridge_SpinSome(void);
 
 bool MicroRosBridge_IsConnected(void);
 
-/* 0 neu chua bao gio nhan duoc /joint_cmd nao (kho boot) - dung y het gia tri khoi tao
- * g_last_joint_cmd_ms = 0 cua ban CAN cu. */
 uint32_t MicroRosBridge_LastJointCmdMs(void);
+bool MicroRosBridge_HasReceivedJointCmd(void);
+uint32_t MicroRosBridge_JointCmdCount(void);
+
+/* Drop only the previous publisher's sequence baseline after the command
+ * watchdog expires. Diagnostic counters remain cumulative; the first command
+ * from a restarted host establishes a new baseline instead of reporting a
+ * false packet gap. */
+void MicroRosBridge_ResetCommandSequence(void);
 
 /* No-op (bo qua) neu chua connected - an toan goi vo dieu kien moi chu ky
  * JOINT_FB_SEND_PERIOD_MS trong main.c. Tu doc Actuator_GetMeasured() ben trong. */
 void MicroRosBridge_PublishJointFb(void);
+
+/* Low-rate actuator/CAN/transport counters; main.c calls at 10 Hz. */
+void MicroRosBridge_PublishJointDiag(void);
 
 typedef enum
 {

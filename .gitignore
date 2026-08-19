@@ -11,6 +11,7 @@ __pycache__/
 
 # Firmware
 firmware/stm32h7/build/
+firmware/stm32h7/build-*/
 
 # micro-ROS vendored sources - fetched via `vcs import < ros2.repos` (standard
 # micro_ros_setup workflow, see toolchain.cmake), NOT hand-written code -

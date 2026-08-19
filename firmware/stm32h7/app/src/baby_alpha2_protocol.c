@@ -21,6 +21,16 @@ float BA2_DecodePosAct(uint16_t raw)
     return ((float)raw - 32768.0f) / 65535.0f * 32.768f;
 }
 
+float BA2_DecodeVelAct(uint16_t raw)
+{
+    return ((float)raw - 32768.0f) / 65535.0f * 90.0f;
+}
+
+float BA2_DecodeTauAct(uint16_t raw)
+{
+    return ((float)raw - 32768.0f) / 65535.0f * 48.0f;
+}
+
 uint16_t BA2_EncodePosAct(float q_rad)
 {
     float raw_f = (q_rad / 32.768f) * 65535.0f + 32768.0f;

@@ -73,7 +73,8 @@ make keyboard           # hoặc joystick/stand/sit - HỆT như mô phỏng, c�
 ## 4. Firmware STM32H7
 
 ```bash
-make microros-lib      # bắt buộc sau khi đổi/thêm JointCmd, JointFb hoặc ImuRaw
+make microros-lib      # bắt buộc sau khi đổi/thêm message dùng bởi firmware
+make firmware-test     # unit test codec CAN trên máy, không chạm phần cứng
 make firmware          # build (cần arm-none-eabi-gcc trong PATH - đã có sẵn qua ~/tools/arm-none-eabi-toolchain, xem .bashrc)
 make firmware-flash     # build + nạp qua ST-Link (cần stlink-tools + ST-Link thật)
 make firmware-clean

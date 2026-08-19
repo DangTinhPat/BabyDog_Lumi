@@ -7,6 +7,7 @@ find_package(rosidl_default_generators REQUIRED)
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/ImuRaw.msg"
   "msg/JointCmd.msg"
+  "msg/JointDiag.msg"
   "msg/JointFb.msg"
 )
 

@@ -6,6 +6,7 @@
 #include "tick.h"
 #include <string.h>
 #include <stdbool.h>
+#include <limits.h>
 
 #define BA2_PI_F        3.14159265358979323846f
 #define BA2_DEG2RAD(d)  ((d) * (BA2_PI_F / 180.0f))
@@ -23,11 +24,21 @@ static float g_last_target[JOINT_COUNT] = {
 };
 static float g_measured_angle[JOINT_COUNT];      /* khong gian LOGIC */
 static float g_measured_velocity[JOINT_COUNT];   /* khong gian LOGIC */
+static float g_measured_effort[JOINT_COUNT];     /* khong gian LOGIC */
 static uint32_t g_last_telemetry_ms[JOINT_COUNT];
+static uint16_t g_status_raw_le[JOINT_COUNT];
 static int g_has_feedback[JOINT_COUNT];
+static int g_feedback_required[JOINT_COUNT];
+static int g_active_required[JOINT_COUNT];
+static uint32_t g_last_set_target_ms;
+static bool g_has_set_target;
+static uint16_t g_runtime_fault_mask;
+static uint16_t g_disable_pending_mask;
+static uint32_t g_can_tx_fail_count[2];
 
-/* true = khớp này hiệu chuẩn thành công lúc Actuator_Init() (PING+đọc HOME
- * đều OK) - Actuator_SetTarget() BỎ QUA hoàn toàn khớp hiệu chuẩn thất bại,
+/* true = khớp này hiệu chuẩn thành công lúc Actuator_Init() (PING/HANDSHAKE,
+ * ENABLE/telemetry va HOME deu OK; SETUP ACK la best-effort vi khong phai
+ * moi driver revision deu tra ve) - Actuator_SetTarget() BỎ QUA hoàn toàn khớp hiệu chuẩn thất bại,
  * không gửi lệnh gì (an toàn hơn là gửi lệnh với giới hạn không đáng tin). */
 static int g_joint_ok[JOINT_COUNT];
 
@@ -49,12 +60,8 @@ static float g_home_offset_rad[JOINT_COUNT];
 
 /* Gia tri LOGIC gia dinh dung cho tu the HOME (nam xap luc cap nguon, xem
  * motor_calib.h) - chi so theo JointType_t (1=Hang,2=Dui,3=Goi), [0] khong
- * dung. Dat 0.0 cho ca 3 loai: URDF (babydog.xacro) HIEN DANG o nguyen ban
- * goc (chua hieu chinh origin/limit rieng cho tu the home那 - xem NOTE.md
- * muc 2.8, phan URDF con dang dang do), nen "0" o day chi co nghia "coi tu
- * the vat ly luc cap nguon la moc logic 0" - CHUA chac chan khop hinh dang
- * "nam xap" tren RViz cho toi khi URDF cung duoc hieu chinh tuong ung. Neu
- * sau nay do duoc gia tri khac dung hon, chi sua mang nay. */
+ * dung. Moc 0.0 cho ca 3 loai da duoc dong bo voi origin/limit hieu chinh
+ * trong babydog.xacro; firmware va URDF phai tiep tuc thay doi cung nhau. */
 static const float ASSUMED_REST_LOGICAL_RAD[4] = {0.0f, 0.0f, 0.0f, 0.0f};
 
 /* ===== Chuyen doi khong gian LOGIC <-> RAW (xem motor_calib.h header) =====
@@ -93,20 +100,81 @@ static float LogicalVelocityToRaw(JointIndex_t joint, float logical_rad_s)
     return (float)sign * logical_rad_s;
 }
 
+static float RawVelocityToLogical(JointIndex_t joint, float raw_rad_s)
+{
+    const int sign = MOTOR_JOINT_SIGN[Motor_LegGroupForJoint(joint)][Motor_JointTypeForJoint(joint)];
+    return (float)sign * raw_rad_s;
+}
+
+static float RawTorqueToLogical(JointIndex_t joint, float raw_nm)
+{
+    const int sign = MOTOR_JOINT_SIGN[Motor_LegGroupForJoint(joint)][Motor_JointTypeForJoint(joint)];
+    return (float)sign * raw_nm;
+}
+
+static uint32_t bus_index(uint32_t instance)
+{
+    return (instance == CAN_INSTANCE_2) ? 1U : 0U;
+}
+
+static void record_tx_failure(uint32_t instance)
+{
+    const uint32_t index = bus_index(instance);
+    if (g_can_tx_fail_count[index] != UINT32_MAX)
+    {
+        g_can_tx_fail_count[index]++;
+    }
+}
+
 static bool can_tx(uint32_t instance, const CAN_Frame *f)
 {
     for (uint32_t i = 0U; i < 200U; i++)
     {
         if (CAN_Transmit(instance, f)) { return true; }
     }
+    record_tx_failure(instance);
     return false;
 }
 
-typedef bool (*MatchFn)(const CAN_Frame *rx, uint32_t id);
-static bool match_ping(const CAN_Frame *rx, uint32_t id)  { return rx->data_len >= 1U && rx->data[0] == BA2_REPLY_PING(id); }
-static bool match_hs(const CAN_Frame *rx, uint32_t id)    { return rx->data_len >= 1U && rx->data[0] == BA2_REPLY_HS(id); }
-static bool match_setup(const CAN_Frame *rx, uint32_t id) { return rx->data_len >= 1U && rx->data[0] == BA2_REPLY_SETUP(id); }
-static bool match_page0(const CAN_Frame *rx, uint32_t id) { return rx->data_len >= 12U && rx->data[0] == BA2_REPLY_PAGE0(id); }
+static void disable_all_drivers_best_effort(void)
+{
+    /* The STM32 can reboot while joint drivers remain powered and retain the
+     * last active PD target. Overwrite that state before the relatively long
+     * per-joint initialization sequence starts. Failed sends are counted and
+     * the affected joint will still fail the later handshake/telemetry gates. */
+    for (int j = 0; j < (int)JOINT_COUNT; j++)
+    {
+        const JointIndex_t joint = (JointIndex_t)j;
+        const CAN_Frame disable = BA2_BuildSystemFrame(
+            Motor_IdForJoint(joint), BA2_OPCODE_MOTOR_DISABLE);
+        (void)can_tx(Motor_BusForJoint(joint), &disable);
+    }
+}
+
+typedef bool (*MatchFn)(const CAN_Frame *rx, uint32_t id, const void *context);
+static bool match_ping(const CAN_Frame *rx, uint32_t id, const void *context)
+{
+    (void)context;
+    return rx->data_len >= 12U && rx->data[0] == BA2_REPLY_PING(id);
+}
+static bool match_hs(const CAN_Frame *rx, uint32_t id, const void *context)
+{
+    (void)context;
+    return rx->data_len >= 12U && rx->data[0] == BA2_REPLY_HS(id);
+}
+static bool match_setup(const CAN_Frame *rx, uint32_t id, const void *context)
+{
+    (void)context;
+    /* Driver revisions do not expose a verified, stable full-payload echo.
+     * When an ACK is present, data[0] is the only validated identity field. */
+    return rx->data_len >= 1U && rx->data[0] == BA2_REPLY_SETUP(id);
+}
+static bool match_page0(const CAN_Frame *rx, uint32_t id)
+{
+    return rx->data_len >= 12U && rx->data[0] == BA2_REPLY_PAGE0(id);
+}
+
+static bool status_is_explicitly_disabled(uint16_t status_raw_le);
 
 /* Gửi rồi chờ đúng phản hồi mong đợi (retry nếu timeout) - MỌI phản hồi
  * BabyAlpha2 về CAN ID=0 (xem motor_topology.h header), phân biệt bằng
@@ -114,18 +182,18 @@ static bool match_page0(const CAN_Frame *rx, uint32_t id) { return rx->data_len 
  * main.c vào vòng lặp chính) - đây là nơi DUY NHẤT khác main.c tự gọi
  * CAN_Receive(), an toàn vì không có ai khác đọc FIFO cùng lúc lúc boot. */
 static bool send_wait(uint32_t instance, const CAN_Frame *f, MatchFn m, uint32_t id,
-                       uint32_t timeout_ms, uint32_t retries)
+                       const void *context, uint32_t timeout_ms, uint32_t retries)
 {
     for (uint32_t a = 0U; a <= retries; a++)
     {
-        (void)can_tx(instance, f);
+        if (!can_tx(instance, f)) { continue; }
         const uint32_t t0 = Tick_GetMs();
         while ((Tick_GetMs() - t0) < timeout_ms)
         {
             CAN_Frame rx;
             while (CAN_IsRxPending(instance) && CAN_Receive(instance, &rx))
             {
-                if (rx.id == 0U && m(&rx, id)) { return true; }
+                if (rx.id == 0U && m(&rx, id, context)) { return true; }
             }
         }
     }
@@ -182,20 +250,26 @@ static bool ping_handshake_enable(JointIndex_t joint)
     const uint32_t id = Motor_IdForJoint(joint);
 
     CAN_Frame f = BA2_BuildSystemFrame(id, BA2_OPCODE_PING);
-    const bool ok = send_wait(instance, &f, match_ping, id, 300U, 4U);
+    if (!send_wait(instance, &f, match_ping, id, NULL, 300U, 4U))
+    {
+        return false;
+    }
 
     f = BA2_BuildHandshakeFrame(id);
-    (void)send_wait(instance, &f, match_hs, id, 300U, 4U);
+    if (!send_wait(instance, &f, match_hs, id, NULL, 300U, 4U))
+    {
+        return false;
+    }
 
     f = BA2_BuildSystemFrame(id, BA2_OPCODE_MOTOR_ENABLE);
-    (void)can_tx(instance, &f);
-    return ok;
+    return can_tx(instance, &f);
 }
 
 /* Đọc vị trí thực bằng khung PD Kp=Kd=tau=0 (động cơ KHÔNG sinh lực trong
  * lúc đọc) - dùng làm HOME của phiên khởi động này (khong gian RAW, chuyen
  * sang LOGIC ngay truoc khi tra ve). */
-static bool read_home_logical(JointIndex_t joint, float *logical_rad)
+static bool read_home_logical(JointIndex_t joint, float *logical_rad,
+                              CAN_Frame *telemetry_out)
 {
     const uint32_t instance = Motor_BusForJoint(joint);
     const uint32_t id = Motor_IdForJoint(joint);
@@ -203,7 +277,7 @@ static bool read_home_logical(JointIndex_t joint, float *logical_rad)
     {
         const CAN_Frame probe = BA2_BuildPdFrame(
             id, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, MOTOR_TAU_ABS_LIMIT_NM);
-        (void)can_tx(instance, &probe);
+        if (!can_tx(instance, &probe)) { continue; }
         const uint32_t t0 = Tick_GetMs();
         while ((Tick_GetMs() - t0) < 20U)
         {
@@ -212,8 +286,12 @@ static bool read_home_logical(JointIndex_t joint, float *logical_rad)
             {
                 if (rx.id == 0U && match_page0(&rx, id))
                 {
+                    const uint16_t status_raw_le = (uint16_t)rx.data[10] |
+                                                   ((uint16_t)rx.data[11] << 8);
+                    if (status_is_explicitly_disabled(status_raw_le)) { continue; }
                     const float raw_rad = BA2_DecodePosAct(((uint16_t)rx.data[1] << 8) | rx.data[2]);
                     *logical_rad = RawToLogical(joint, raw_rad);
+                    if (telemetry_out != NULL) { *telemetry_out = rx; }
                     return true;
                 }
             }
@@ -239,19 +317,30 @@ static bool send_setup_limits(JointIndex_t joint, float limit_max_logical, float
     const uint16_t max_raw = BA2_EncodePosAct(raw_max);
     const uint16_t min_raw = BA2_EncodePosAct(raw_min);
     const CAN_Frame f = BA2_BuildSetupLimitsFrame(id, max_raw, min_raw, MOTOR_VMAX_RAW);
-    return send_wait(instance, &f, match_setup, id, 300U, 4U);
+    return send_wait(instance, &f, match_setup, id, &f, 300U, 4U);
 }
 
 void Actuator_Init(void)
 {
     memset(g_measured_angle, 0, sizeof(g_measured_angle));
     memset(g_measured_velocity, 0, sizeof(g_measured_velocity));
+    memset(g_measured_effort, 0, sizeof(g_measured_effort));
     memset(g_last_telemetry_ms, 0, sizeof(g_last_telemetry_ms));
+    memset(g_status_raw_le, 0, sizeof(g_status_raw_le));
     memset(g_has_feedback, 0, sizeof(g_has_feedback));
+    memset(g_feedback_required, 0, sizeof(g_feedback_required));
+    memset(g_active_required, 0, sizeof(g_active_required));
     memset(g_joint_ok, 0, sizeof(g_joint_ok));
     memset(g_limit_max_rad, 0, sizeof(g_limit_max_rad));
     memset(g_limit_min_rad, 0, sizeof(g_limit_min_rad));
     memset(g_home_offset_rad, 0, sizeof(g_home_offset_rad));
+    memset(g_can_tx_fail_count, 0, sizeof(g_can_tx_fail_count));
+    g_last_set_target_ms = 0U;
+    g_has_set_target = false;
+    g_runtime_fault_mask = 0U;
+    g_disable_pending_mask = 0U;
+
+    disable_all_drivers_best_effort();
 
     /* Buoc 1: PING+HANDSHAKE+ENABLE tuan tu 12 khop (keepalive giua cac
      * buoc de khong khop nao bi bo doi qua lau). */
@@ -275,7 +364,9 @@ void Actuator_Init(void)
         const JointIndex_t joint = (JointIndex_t)j;
 
         float home_logical_rad = 0.0f;
-        const bool got_home = read_home_logical(joint, &home_logical_rad);
+        CAN_Frame home_telemetry = {0};
+        const bool got_home = read_home_logical(
+            joint, &home_logical_rad, &home_telemetry);
         keepalive_others(joint);
         if (!got_home)
         {
@@ -302,12 +393,45 @@ void Actuator_Init(void)
          * - lenh giu dau tien khong giat (sai so ban dau = 0, oneLeg/HW.md muc 8). */
         g_last_target[j] = assumed_rest;
         g_measured_angle[j] = assumed_rest;
+        g_measured_velocity[j] = RawVelocityToLogical(
+            joint, BA2_DecodeVelAct(
+                ((uint16_t)home_telemetry.data[3] << 8) | home_telemetry.data[4]));
+        g_measured_effort[j] = RawTorqueToLogical(
+            joint, BA2_DecodeTauAct(
+                ((uint16_t)home_telemetry.data[5] << 8) | home_telemetry.data[6]));
+        g_status_raw_le[j] = (uint16_t)home_telemetry.data[10] |
+                             ((uint16_t)home_telemetry.data[11] << 8);
         g_has_feedback[j] = 1;
         g_last_telemetry_ms[j] = Tick_GetMs();
 
+        /* Some proven driver revisions apply SETUP_LIMITS without returning
+         * the documented ACK. Do not discard valid HOME telemetry or disable
+         * such a joint: Actuator_SetTarget() still enforces the same limits
+         * independently on the MCU before every CAN command. */
         (void)send_setup_limits(joint, g_limit_max_rad[j], g_limit_min_rad[j]);
         keepalive_others(joint);
     }
+}
+
+static void latch_runtime_fault(JointIndex_t joint)
+{
+    const uint16_t bit = (uint16_t)(1U << (uint32_t)joint);
+    if (!g_joint_ok[joint]) { return; }
+
+    g_joint_ok[joint] = 0;
+    g_feedback_required[joint] = 0;
+    g_active_required[joint] = 0;
+    g_runtime_fault_mask |= bit;
+    g_disable_pending_mask |= bit;
+}
+
+static bool status_is_explicitly_disabled(uint16_t status_raw_le)
+{
+    /* 0x0001 is NOT a reliable Standby indication: all 12 physical drivers in
+     * this robot returned it immediately after accepting an active PD command.
+     * Keep revision-specific nonzero values observable through /joint_diag,
+     * but only use the unambiguous all-zero Disabled value as a safety gate. */
+    return status_raw_le == 0x0000U;
 }
 
 void Actuator_OnBabyAlpha2Frame(uint32_t instance, const CAN_Frame *frame)
@@ -320,39 +444,51 @@ void Actuator_OnBabyAlpha2Frame(uint32_t instance, const CAN_Frame *frame)
     const uint8_t b0 = frame->data[0];
     if (b0 < 1U || b0 > 6U) { return; }
 
-    const uint32_t bus_index = (instance == CAN_INSTANCE_2) ? 1U : 0U;
-    const uint32_t slot = (bus_index * 6U) + (uint32_t)(b0 - 1U);
+    const uint32_t bus_slot = (instance == CAN_INSTANCE_2) ? 1U : 0U;
+    const uint32_t slot = (bus_slot * 6U) + (uint32_t)(b0 - 1U);
     if (slot >= JOINT_COUNT) { return; }
     const JointIndex_t joint = (JointIndex_t)slot;
 
-    const float raw_rad = BA2_DecodePosAct(((uint16_t)frame->data[1] << 8) | frame->data[2]);
-    const float angle_logical_rad = RawToLogical(joint, raw_rad);
+    const uint16_t position_raw = ((uint16_t)frame->data[1] << 8) | frame->data[2];
+    const uint16_t velocity_raw = ((uint16_t)frame->data[3] << 8) | frame->data[4];
+    const uint16_t effort_raw = ((uint16_t)frame->data[5] << 8) | frame->data[6];
+    const uint16_t status_raw_le = (uint16_t)frame->data[10] |
+                                   ((uint16_t)frame->data[11] << 8);
     const uint32_t now_ms = Tick_GetMs();
 
-    /* BabyAlpha2's telemetry Page0 khong bao gom van toc (chi position, xem
-     * baby_alpha2_protocol.h) - tu uoc luong bang sai phan luot (backward
-     * difference) qua 2 lan telemetry lien tiep TRONG khong gian LOGIC (da
-     * chuyen doi dau o tren, nen hieu 2 lan doc lien tiep tu dong dung dau,
-     * khong can xu ly rieng) - KHONG phai gia tri driver bao ve, du chinh
-     * xac cho muc dich bao cao state len ROS2 (Actuator_GetMeasured()),
-     * khong dung de dieu khien PD (PD chay hoan toan tren driver). */
-    if (g_has_feedback[slot])
-    {
-        const uint32_t dt_ms = now_ms - g_last_telemetry_ms[slot];
-        if (dt_ms > 0U)
-        {
-            g_measured_velocity[slot] = (angle_logical_rad - g_measured_angle[slot]) / ((float)dt_ms / 1000.0f);
-        }
-    }
-    g_measured_angle[slot] = angle_logical_rad;
+    g_measured_angle[slot] = RawToLogical(joint, BA2_DecodePosAct(position_raw));
+    g_measured_velocity[slot] = RawVelocityToLogical(joint, BA2_DecodeVelAct(velocity_raw));
+    g_measured_effort[slot] = RawTorqueToLogical(joint, BA2_DecodeTauAct(effort_raw));
+    g_status_raw_le[slot] = status_raw_le;
     g_last_telemetry_ms[slot] = now_ms;
     g_has_feedback[slot] = 1;
+
+    /* Driver was active and receiving a continuous command stream, but now
+     * explicitly reports Disabled. This is the observable signature of
+     * reset/hot-plug or a lost enable state; its RAM limits may be gone, so
+     * never resume force without a full reboot/recalibration. */
+    if (g_active_required[slot] && status_is_explicitly_disabled(status_raw_le))
+    {
+        latch_runtime_fault(joint);
+    }
 }
 
 void Actuator_SetTarget(const float angles_rad[12], const float velocities_rad_s[12],
                         const float kp[12],
                         const float kd[12], const float tau_ff_nm[12])
 {
+    const uint32_t now_ms = Tick_GetMs();
+    if (!g_has_set_target ||
+        (now_ms - g_last_set_target_ms) >= ACTUATOR_TELEMETRY_TIMEOUT_MS)
+    {
+        /* No commands means no telemetry replies. On stream restart, require
+         * one zero-gain probe before treating old feedback as a runtime loss. */
+        memset(g_feedback_required, 0, sizeof(g_feedback_required));
+        memset(g_active_required, 0, sizeof(g_active_required));
+    }
+    g_last_set_target_ms = now_ms;
+    g_has_set_target = true;
+
     /* Kep velocity/KP/KD/Tff LOP 2 - doc lap voi phia ROS2/EC (xem
      * StandSitController.h). BA2_EncodeGainX100() chi kep san = 0, chua co
      * tran - kep o day truoc, phong gia tri loi (YAML sai don vi, hoac
@@ -363,7 +499,13 @@ void Actuator_SetTarget(const float angles_rad[12], const float velocities_rad_s
          * ca (an toan hon la gui voi gioi han khong dang tin). */
         if (!g_joint_ok[j]) { continue; }
         const JointIndex_t joint = (JointIndex_t)j;
-
+        const bool feedback_fresh = g_has_feedback[j] &&
+            ((now_ms - g_last_telemetry_ms[j]) < ACTUATOR_TELEMETRY_TIMEOUT_MS);
+        if (!feedback_fresh && g_feedback_required[j])
+        {
+            latch_runtime_fault(joint);
+            continue;
+        }
         float joint_kp = kp[j];
         float joint_kd = kd[j];
         float joint_velocity = velocities_rad_s[j];
@@ -382,6 +524,14 @@ void Actuator_SetTarget(const float angles_rad[12], const float velocities_rad_s
         if (joint_kd > MOTOR_KD_ABS_LIMIT) { joint_kd = MOTOR_KD_ABS_LIMIT; }
         if (joint_tau_ff > MOTOR_TAU_ABS_LIMIT_NM) { joint_tau_ff = MOTOR_TAU_ABS_LIMIT_NM; }
         if (joint_tau_ff < -MOTOR_TAU_ABS_LIMIT_NM) { joint_tau_ff = -MOTOR_TAU_ABS_LIMIT_NM; }
+        const bool active_requested =
+            joint_kp > 0.0f || joint_kd > 0.0f || joint_tau_ff != 0.0f;
+        if (feedback_fresh && active_requested && g_active_required[j] &&
+            status_is_explicitly_disabled(g_status_raw_le[j]))
+        {
+            latch_runtime_fault(joint);
+            continue;
+        }
 
         /* Kep gioi han hanh trinh LOP 2 TRONG KHONG GIAN LOGIC - doc lap voi
          * SETUP_LIMITS da gui driver (oneLeg/HW.md muc 8, 2 lop bao ve
@@ -402,21 +552,75 @@ void Actuator_SetTarget(const float angles_rad[12], const float velocities_rad_s
         /* Chuyen position/velocity/torque sang khong gian RAW NGAY TRUOC KHI
          * ma hoa. Position co home offset; velocity va torque chi doi dau,
          * tuyet doi khong duoc cong offset goc vao hai dai luong dao ham. */
-        const float target_raw = LogicalToRaw(joint, target_logical);
-        const float velocity_raw = LogicalVelocityToRaw(joint, joint_velocity);
-        const float tau_ff_raw = LogicalTorqueToRaw(joint, joint_tau_ff);
+        const bool safe_probe = !feedback_fresh;
+        const float transmitted_target = safe_probe
+            ? (g_has_feedback[j] ? g_measured_angle[j] : g_last_target[j])
+            : target_logical;
+        const float target_raw = LogicalToRaw(joint, transmitted_target);
+        const float velocity_raw = LogicalVelocityToRaw(
+            joint, safe_probe ? 0.0f : joint_velocity);
+        const float tau_ff_raw = LogicalTorqueToRaw(
+            joint, safe_probe ? 0.0f : joint_tau_ff);
         const CAN_Frame frame = BA2_BuildPdFrame(
-            Motor_IdForJoint(joint), target_raw, velocity_raw, joint_kp, joint_kd,
+            Motor_IdForJoint(joint), target_raw, velocity_raw,
+            safe_probe ? 0.0f : joint_kp, safe_probe ? 0.0f : joint_kd,
             tau_ff_raw, MOTOR_TAU_ABS_LIMIT_NM);
-        (void)CAN_Transmit(Motor_BusForJoint(joint), &frame);
+        const uint32_t instance = Motor_BusForJoint(joint);
+        if (!CAN_Transmit(instance, &frame))
+        {
+            record_tx_failure(instance);
+        }
+        else if (!safe_probe)
+        {
+            g_feedback_required[j] = 1;
+            g_active_required[j] = active_requested ? 1 : 0;
+        }
+    }
+}
+
+void Actuator_ServiceSafety(void)
+{
+    for (uint32_t instance = CAN_INSTANCE_1; instance <= CAN_INSTANCE_2; instance++)
+    {
+        if (CAN_IsBusOff(instance))
+        {
+            const int first = (instance == CAN_INSTANCE_2) ? 6 : 0;
+            const int end = first + 6;
+            for (int j = first; j < end; j++)
+            {
+                if (g_joint_ok[j]) { latch_runtime_fault((JointIndex_t)j); }
+            }
+            continue;
+        }
+
+        const int first = (instance == CAN_INSTANCE_2) ? 6 : 0;
+        const int end = first + 6;
+        for (int j = first; j < end; j++)
+        {
+            const uint16_t bit = (uint16_t)(1U << (uint32_t)j);
+            if ((g_disable_pending_mask & bit) == 0U) { continue; }
+
+            const JointIndex_t joint = (JointIndex_t)j;
+            const CAN_Frame disable = BA2_BuildSystemFrame(
+                Motor_IdForJoint(joint), BA2_OPCODE_MOTOR_DISABLE);
+            if (CAN_Transmit(instance, &disable))
+            {
+                g_disable_pending_mask &= (uint16_t)~bit;
+            }
+            else
+            {
+                record_tx_failure(instance);
+                break;
+            }
+        }
     }
 }
 
 void Actuator_Disable(void)
 {
-    /* kp=0/kd nhỏ -> board driver mỗi khớp tự thả lỏng (giống StatePassive
-     * phía ROS2: kp=0, kd=1.0) - target góc không còn ý nghĩa khi kp=0, dùng
-     * lại vị trí đo được gần nhất cho gọn. */
+    /* Watchdog fail-soft frame: zero every torque-producing term. This is
+     * intentionally softer than MOTOR_DISABLE so a brief EC reconnect can
+     * recover without re-running physical home calibration. */
     float target[JOINT_COUNT];
     float velocity[JOINT_COUNT];
     float kp[JOINT_COUNT];
@@ -427,10 +631,15 @@ void Actuator_Disable(void)
     {
         velocity[j] = 0.0f;
         kp[j] = 0.0f;
-        kd[j] = 1.0f;
+        kd[j] = 0.0f;
         tau_ff[j] = 0.0f;
     }
+    memset(g_feedback_required, 0, sizeof(g_feedback_required));
+    memset(g_active_required, 0, sizeof(g_active_required));
     Actuator_SetTarget(target, velocity, kp, kd, tau_ff);
+    memset(g_feedback_required, 0, sizeof(g_feedback_required));
+    memset(g_active_required, 0, sizeof(g_active_required));
+    g_has_set_target = false;
 }
 
 void Actuator_GetLastTarget(float angles_rad[12])
@@ -441,12 +650,55 @@ void Actuator_GetLastTarget(float angles_rad[12])
     }
 }
 
-void Actuator_GetMeasured(float angles_rad[12], float velocities_rad_s[12])
+uint16_t Actuator_GetMeasured(float angles_rad[12], float velocities_rad_s[12],
+                              float efforts_nm[12])
 {
+    const uint32_t now_ms = Tick_GetMs();
+    uint16_t valid_mask = 0U;
     for (int j = 0; j < (int)JOINT_COUNT; j++)
     {
         angles_rad[j] = g_has_feedback[j] ? g_measured_angle[j] : 0.0f;
         velocities_rad_s[j] = g_has_feedback[j] ? g_measured_velocity[j] : 0.0f;
+        efforts_nm[j] = g_has_feedback[j] ? g_measured_effort[j] : 0.0f;
+        if (g_joint_ok[j] && g_has_feedback[j] &&
+            ((now_ms - g_last_telemetry_ms[j]) < ACTUATOR_TELEMETRY_TIMEOUT_MS))
+        {
+            valid_mask |= (uint16_t)(1U << (uint32_t)j);
+        }
+    }
+    return valid_mask;
+}
+
+void Actuator_GetDiagnostics(ActuatorDiagnostics *diagnostics)
+{
+    if (diagnostics == NULL) { return; }
+
+    const uint32_t now_ms = Tick_GetMs();
+    memset(diagnostics, 0, sizeof(*diagnostics));
+    diagnostics->runtime_fault_mask = g_runtime_fault_mask;
+    diagnostics->can_bus_off_mask =
+        (CAN_IsBusOff(CAN_INSTANCE_1) ? 0x01U : 0U) |
+        (CAN_IsBusOff(CAN_INSTANCE_2) ? 0x02U : 0U);
+    diagnostics->can_tx_fail_count[0] = g_can_tx_fail_count[0];
+    diagnostics->can_tx_fail_count[1] = g_can_tx_fail_count[1];
+
+    for (int j = 0; j < (int)JOINT_COUNT; j++)
+    {
+        const uint16_t bit = (uint16_t)(1U << (uint32_t)j);
+        if (g_joint_ok[j]) { diagnostics->ready_mask |= bit; }
+        diagnostics->status_raw_le[j] = g_status_raw_le[j];
+
+        uint32_t age_ms = UINT16_MAX;
+        if (g_has_feedback[j])
+        {
+            age_ms = now_ms - g_last_telemetry_ms[j];
+            if (age_ms < ACTUATOR_TELEMETRY_TIMEOUT_MS)
+            {
+                diagnostics->fresh_mask |= bit;
+            }
+            if (age_ms > UINT16_MAX) { age_ms = UINT16_MAX; }
+        }
+        diagnostics->telemetry_age_ms[j] = (uint16_t)age_ms;
     }
 }
 

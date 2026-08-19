@@ -103,12 +103,11 @@ controller:
     # guess inherited from superDog, needs empirical tuning once the robot is
     # spawned/on real hardware.
     # Per-joint order: FR abad/hip/knee, FL, RR, RL. Values intentionally
-    # preserve the previous common gains; tune joint types independently only
-    # after logging real q error/velocity.
-    stand_kp: [50.0, 50.0, 50.0, 50.0, 50.0, 50.0,
-               50.0, 50.0, 50.0, 50.0, 50.0, 50.0]
-    stand_kd: [1.5, 1.5, 1.5, 1.5, 1.5, 1.5,
-               1.5, 1.5, 1.5, 1.5, 1.5, 1.5]
+    # repeat abad/hip/knee gains for FR, FL, RR, RL.
+    stand_kp: [17.0, 18.0, 21.0, 17.0, 18.0, 21.0,
+               17.0, 18.0, 21.0, 17.0, 18.0, 21.0]
+    stand_kd: [1.0, 1.05, 1.15, 1.0, 1.05, 1.15,
+               1.0, 1.05, 1.15, 1.0, 1.05, 1.15]
     sit_kp: [50.0, 50.0, 50.0, 50.0, 50.0, 50.0,
              50.0, 50.0, 50.0, 50.0, 50.0, 50.0]
     sit_kd: [1.5, 1.5, 1.5, 1.5, 1.5, 1.5,
